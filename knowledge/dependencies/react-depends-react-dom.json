@@ -1,0 +1,12 @@
+{
+  "id": "react-depends-react-dom",
+  "name": "React depends on react-dom",
+  "type": "dependency",
+  "from": "react",
+  "to": "react-dom",
+  "constraint": ">=18.0.0",
+  "description": "React requires react-dom to render components into the DOM.",
+  "relationships": [
+    { "type": "depends_on", "target": "react-dom", "label": "requires for rendering" }
+  ]
+}

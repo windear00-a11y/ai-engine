@@ -1,0 +1,11 @@
+{
+  "id": "react-component-basic-example",
+  "name": "Basic React Component Example",
+  "type": "example",
+  "description": "A minimal function component that renders a heading.",
+  "code": "function Hello() {\n  return <h1>Hello, world!</h1>;\n}",
+  "relationships": [
+    { "type": "example_of", "target": "react-component" },
+    { "type": "references", "target": "jsx" }
+  ]
+}

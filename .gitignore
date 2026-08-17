@@ -1,0 +1,53 @@
+# --- Python bytecode / caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Secrets / credentials / local env (never commit) ---
+.env
+.env.*
+*.env
+*.key
+*.pem
+id_rsa*
+*.token
+*.secret
+credentials.*
+
+# --- Editor / OS noise ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Temporary / generated files ---
+*.log
+tmp/
+*.tmp
+.cache/
+
+# --- Databases ---
+# SQLite files are generated state and are normally ignored. The project's
+# knowledge database (database/knowledge.db) is the current persistent external
+# memory and is intentionally committed as the canonical backup, so it is
+# re-included below. Any other *.db is still ignored.
+*.db
+!database/knowledge.db

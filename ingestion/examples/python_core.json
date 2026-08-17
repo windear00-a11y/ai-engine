@@ -1,0 +1,131 @@
+{
+  "source": {
+    "name": "python-core",
+    "version": "1.0",
+    "description": "Core Python language knowledge: concepts, procedures, rules, examples and dependencies.",
+    "language": "python"
+  },
+  "nodes": [
+    {
+      "id": "python",
+      "type": "technology",
+      "name": "Python",
+      "description": "A high-level, interpreted, general-purpose programming language.",
+      "paradigms": ["object-oriented", "imperative", "functional"],
+      "relationships": [
+        { "type": "related_to", "target": "python-standard-library", "label": "ships with" }
+      ]
+    },
+    {
+      "id": "python-standard-library",
+      "type": "technology",
+      "name": "Python Standard Library",
+      "description": "The bundle of modules and packages shipped with every Python install.",
+      "relationships": [
+        { "type": "part_of", "target": "python", "label": "is part of" }
+      ]
+    },
+
+    { "id": "variables", "type": "concept", "name": "Variables",
+      "description": "Names that refer to values in memory.",
+      "relationships": [ { "type": "part_of", "target": "python" } ] },
+    { "id": "functions", "type": "concept", "name": "Functions",
+      "description": "Reusable blocks of code that accept arguments and return values.",
+      "relationships": [ { "type": "part_of", "target": "python" } ] },
+    { "id": "classes", "type": "concept", "name": "Classes",
+      "description": "Blueprints for creating objects with state and behavior.",
+      "relationships": [ { "type": "part_of", "target": "python" } ] },
+    { "id": "modules", "type": "concept", "name": "Modules",
+      "description": "Files containing Python definitions and statements that can be imported.",
+      "relationships": [ { "type": "part_of", "target": "python" } ] },
+    { "id": "lists", "type": "concept", "name": "Lists",
+      "description": "Ordered, mutable collections of arbitrary objects.",
+      "relationships": [ { "type": "part_of", "target": "python" } ] },
+    { "id": "dictionaries", "type": "concept", "name": "Dictionaries",
+      "description": "Mutable mappings of keys to values.",
+      "relationships": [ { "type": "part_of", "target": "python" } ] },
+    { "id": "loops", "type": "concept", "name": "Loops",
+      "description": "Control-flow constructs (for, while) that repeat a block of code.",
+      "relationships": [ { "type": "part_of", "target": "python" } ] },
+    { "id": "conditionals", "type": "concept", "name": "Conditionals",
+      "description": "if/elif/else branches that select code based on predicates.",
+      "relationships": [ { "type": "part_of", "target": "python" } ] },
+    { "id": "exceptions", "type": "concept", "name": "Exceptions",
+      "description": "Objects representing error conditions that can be raised and caught.",
+      "relationships": [ { "type": "part_of", "target": "python" } ] },
+    { "id": "imports", "type": "concept", "name": "Imports",
+      "description": "Statements that bring names from modules into the current namespace.",
+      "relationships": [
+        { "type": "part_of", "target": "python" },
+        { "type": "related_to", "target": "modules", "label": "bind module names" }
+      ] },
+
+    { "id": "define-a-function", "type": "procedure", "name": "Define a Function",
+      "description": "Use 'def' to declare a named, callable procedure.",
+      "relationships": [
+        { "type": "implements", "target": "functions", "label": "defines a function" }
+      ] },
+    { "id": "create-virtual-environment", "type": "procedure",
+      "name": "Create a Virtual Environment",
+      "description": "Isolate project dependencies with 'python -m venv'.",
+      "relationships": [
+        { "type": "depends_on", "target": "python", "label": "requires the interpreter" }
+      ] },
+    { "id": "run-unittest", "type": "procedure", "name": "Run Unittest",
+      "description": "Discover and execute tests with the unittest module.",
+      "relationships": [
+        { "type": "uses", "target": "unittest", "label": "executes test cases" }
+      ] },
+
+    { "id": "handle-exceptions-appropriately", "type": "rule",
+      "name": "Handle Exceptions Appropriately",
+      "description": "Catch only exceptions you can handle and keep handlers narrow.",
+      "relationships": [
+        { "type": "related_to", "target": "exceptions", "label": "governs" }
+      ] },
+    { "id": "avoid-mutable-default-arguments", "type": "rule",
+      "name": "Avoid Mutable Default Arguments",
+      "description": "Do not use mutable objects (e.g. []) as default parameter values.",
+      "relationships": [
+        { "type": "related_to", "target": "functions", "label": "applies to" }
+      ] },
+
+    { "id": "simple-function-example", "type": "example",
+      "name": "Simple Function Example",
+      "description": "A minimal function that adds two numbers and returns the sum.",
+      "code": "def add(a, b):\n    return a + b",
+      "relationships": [
+        { "type": "example_of", "target": "functions" },
+        { "type": "references", "target": "define-a-function" }
+      ] },
+    { "id": "class-example", "type": "example", "name": "Class Example",
+      "description": "A minimal class with an initializer and a method.",
+      "code": "class Point:\n    def __init__(self, x, y):\n        self.x, self.y = x, y",
+      "relationships": [
+        { "type": "example_of", "target": "classes" },
+        { "type": "references", "target": "python" }
+      ] },
+    { "id": "exception-handling-example", "type": "example",
+      "name": "Exception Handling Example",
+      "description": "Try/except that recovers from a ValueError.",
+      "code": "try:\n    int(s)\nexcept ValueError:\n    s = '0'",
+      "relationships": [
+        { "type": "example_of", "target": "exceptions" },
+        { "type": "references", "target": "handle-exceptions-appropriately" }
+      ] },
+    { "id": "unittest-example", "type": "example", "name": "Unittest Example",
+      "description": "A test case asserting that add(1, 2) equals 3.",
+      "code": "import unittest\n\nclass AddTests(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(1, 2), 3)",
+      "relationships": [
+        { "type": "example_of", "target": "run-unittest" },
+        { "type": "references", "target": "unittest" }
+      ] },
+
+    { "id": "unittest", "type": "dependency", "name": "unittest",
+      "description": "Python's built-in unit testing framework (standard library).",
+      "relationships": [
+        { "type": "depends_on", "target": "python-standard-library",
+          "label": "part of the standard library" }
+      ] }
+  ]
+}

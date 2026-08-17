@@ -1,0 +1,9 @@
+{
+  "id": "tool-c",
+  "name": "Tool C",
+  "type": "concept",
+  "description": "Node C that depends on A.",
+  "relationships": [
+    { "type": "depends_on", "target": "tool-a" }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "id": "tool-b",
+  "name": "Tool B",
+  "type": "concept",
+  "description": "Node B that points back to A, forming a cycle.",
+  "relationships": [
+    { "type": "related_to", "target": "tool-a" }
+  ]
+}

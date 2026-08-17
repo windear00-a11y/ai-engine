@@ -1,0 +1,9 @@
+{
+  "id": "valid-concept",
+  "name": "Valid Concept",
+  "type": "concept",
+  "description": "A perfectly valid concept node.",
+  "relationships": [
+    { "type": "related_to", "target": "valid-technology" }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "react-component",
+  "name": "React Component",
+  "type": "concept",
+  "technology": "react",
+  "description": "A reusable UI building block in a React application.",
+  "relationships": [
+    { "type": "instance_of", "target": "react", "label": "belongs to" },
+    { "type": "example_of", "target": "react" },
+    { "type": "related_to", "target": "jsx" },
+    { "type": "related_to", "target": "props" },
+    { "type": "related_to", "target": "state" }
+  ]
+}

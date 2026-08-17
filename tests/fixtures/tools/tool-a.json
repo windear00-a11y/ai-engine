@@ -1,0 +1,9 @@
+{
+  "id": "tool-a",
+  "name": "Tool A",
+  "type": "concept",
+  "description": "Node A in a cyclic relationship graph.",
+  "relationships": [
+    { "type": "related_to", "target": "tool-b" }
+  ]
+}

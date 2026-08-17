@@ -1,0 +1,12 @@
+{
+  "id": "react",
+  "name": "React",
+  "type": "technology",
+  "category": "frontend",
+  "description": "A JavaScript library for building user interfaces.",
+  "relationships": [
+    { "type": "related_to", "target": "javascript", "label": "implemented in" },
+    { "type": "related_to", "target": "typescript", "label": "supports" },
+    { "type": "depends_on", "target": "react-dom", "label": "uses for DOM rendering" }
+  ]
+}

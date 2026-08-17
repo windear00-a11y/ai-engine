@@ -1,0 +1,5 @@
+{
+  "id": "bad-type",
+  "name": "Bad Type",
+  "description": "This node has an unknown type."
+}

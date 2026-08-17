@@ -1,0 +1,7 @@
+{
+  "id": "valid-technology",
+  "name": "Valid Technology",
+  "type": "technology",
+  "description": "A perfectly valid technology node used as a relationship target.",
+  "relationships": []
+}

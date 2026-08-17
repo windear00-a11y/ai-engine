@@ -1,0 +1,9 @@
+{
+  "id": "bad-relationship",
+  "name": "Bad Relationship",
+  "type": "concept",
+  "description": "This node has a relationship missing a target.",
+  "relationships": [
+    { "type": "related_to" }
+  ]
+}
