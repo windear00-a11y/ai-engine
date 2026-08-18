@@ -44,6 +44,12 @@ tmp/
 *.tmp
 .cache/
 
+# --- Downloaded raw corpora (regenerable, not part of the codebase) ---
+sources/
+
+# --- Knowledge Compiler generated output ---
+output/
+
 # --- Databases ---
 # SQLite files are generated state and are normally ignored. The project's
 # knowledge database (database/knowledge.db) is the current persistent external
