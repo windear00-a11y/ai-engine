@@ -91,7 +91,8 @@ class KnowledgeAPI:
 
         Preserves the repository's ``search_nodes`` scoring (word occurrence in
         id/type/name/description/metadata). Results are ordered by score
-        (descending) then node id (ascending). An empty query returns ``[]``.
+        (descending) then node id (ascending), and each result retains its
+        ``_score`` so callers can surface ranking. An empty query returns ``[]``.
         """
         if not isinstance(query, str):
             raise KnowledgeArgumentError(
@@ -103,8 +104,6 @@ class KnowledgeAPI:
         if node_type is not None:
             results = [n for n in results if n.get("type") == node_type]
         results.sort(key=lambda n: (-(n.get("_score") or 0), n.get("id") or ""))
-        for item in results:
-            item.pop("_score", None)
         if limit is not None:
             results = results[:limit]
         return results

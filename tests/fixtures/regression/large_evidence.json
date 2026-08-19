@@ -1,0 +1,20 @@
+{
+  "id": "regression-large-evidence",
+  "type": "concept",
+  "name": "Regression Large Evidence",
+  "description": "LARGE-EVIDENCE-REGRESSION-BLOB A node deliberately stuffed with a very large description so that naive search output would flood any terminal. LARGE-EVIDENCE-REGRESSION-BLOB A node deliberately stuffed with a very large description so that naive search output would flood any terminal. LARGE-EVIDENCE-REGRESSION-BLOB A node deliberately stuffed with a very large description so that naive search output would flood any terminal. LARGE-EVIDENCE-REGRESSION-BLOB A node deliberately stuffed with a very large description so that naive search output would flood any terminal.",
+  "evidence_references": [
+    {
+      "document": "reference/regression.rst",
+      "section_path": ["Regression", "Large evidence output safety"],
+      "location": {
+        "path": "reference/regression.rst",
+        "line_start": 1,
+        "line_end": 999999
+      },
+      "evidence": "REGION-EVIDENCE-BLOB This is placeholder evidence content that in a real ingestion run contains long verbatim excerpts. The regression test multiplies this placeholder until it reaches megabyte scale, then verifies the CLI search output stays compact. REGION-EVIDENCE-BLOB This is placeholder evidence content that in a real ingestion run contains long verbatim excerpts. The regression test multiplies this placeholder until it reaches megabyte scale, then verifies the CLI search output stays compact."
+    }
+  ],
+  "relationships": [],
+  "_source": "tests/fixtures/regression/large_evidence.json"
+}
