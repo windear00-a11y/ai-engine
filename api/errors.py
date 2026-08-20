@@ -56,3 +56,41 @@ class RelationshipTypeError(KnowledgeError):
     def as_dict(self):
         return {"error": self.code, "relationship_type": self.relationship_type,
                 "valid": self.valid, "message": str(self)}
+
+
+class UnknownOperationError(KnowledgeError):
+    """Raised when a tool request names an operation that is not defined."""
+
+    code = "unknown_operation"
+
+    def __init__(self, operation):
+        self.operation = operation
+        super().__init__("unknown operation: %r" % (operation,))
+
+    def as_dict(self):
+        return {"error": self.code, "operation": self.operation,
+                "message": str(self)}
+
+
+class ToolRequestError(KnowledgeError):
+    """Raised when a tool request is malformed (not an object, bad structure)."""
+
+    code = "invalid_request"
+
+    def __init__(self, message):
+        super().__init__(message)
+
+    def as_dict(self):
+        return {"error": self.code, "message": str(self)}
+
+
+class InternalError(KnowledgeError):
+    """Raised for unexpected failures behind the contract boundary.
+
+    Deliberately carries no details so internals never leak to requesters.
+    """
+
+    code = "internal_error"
+
+    def __init__(self):
+        super().__init__("internal error")

@@ -11,6 +11,9 @@ from api.errors import (
     NodeNotFoundError,
     KnowledgeArgumentError,
     RelationshipTypeError,
+    UnknownOperationError,
+    ToolRequestError,
+    InternalError,
 )
 
 __all__ = [
@@ -19,4 +22,7 @@ __all__ = [
     "NodeNotFoundError",
     "KnowledgeArgumentError",
     "RelationshipTypeError",
+    "UnknownOperationError",
+    "ToolRequestError",
+    "InternalError",
 ]
