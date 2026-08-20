@@ -34,6 +34,11 @@ from knowledge_client.transports import (
     TransportProtocol,
 )
 
+# Version of the public tool-call contract this SDK speaks. Mirrors the
+# engine's stable CONTRACT_VERSION ("1"); the value is also echoed verbatim
+# on every tool response envelope as ``contract_version``.
+CONTRACT_VERSION = "1"
+
 __version__ = "1.0.0"
 
 __all__ = [
@@ -52,4 +57,5 @@ __all__ = [
     "InProcessTransport",
     "SessionTransport",
     "OneShotTransport",
+    "CONTRACT_VERSION",
 ]

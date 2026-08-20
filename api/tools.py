@@ -30,7 +30,11 @@ import argparse
 import json
 import sys
 
-from api.contract import DEFAULT_SEARCH_LIMIT, validate_request
+from api.contract import (
+    CONTRACT_VERSION,
+    DEFAULT_SEARCH_LIMIT,
+    validate_request,
+)
 from api.errors import InternalError, KnowledgeError, ToolRequestError
 from api.knowledge_api import KnowledgeAPI
 from retrieval.repository import DEFAULT_KNOWLEDGE_DB
@@ -93,6 +97,7 @@ class ToolInterface:
         return {
             "ok": True,
             "operation": operation,
+            "contract_version": CONTRACT_VERSION,
             "result": result,
         }
 
@@ -110,6 +115,7 @@ class ToolInterface:
         return {
             "ok": False,
             "operation": operation,
+            "contract_version": CONTRACT_VERSION,
             "error": _error_payload(exc),
         }
 

@@ -38,6 +38,7 @@ import os
 import sys
 import time
 
+from api.contract import CONTRACT_VERSION
 from api.tools import ToolInterface
 from retrieval.repository import DEFAULT_KNOWLEDGE_DB
 
@@ -49,6 +50,7 @@ def _single_env(code, message, operation=None):
     return {
         "ok": False,
         "operation": operation,
+        "contract_version": CONTRACT_VERSION,
         "error": {"code": code, "message": message},
     }
 

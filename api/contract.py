@@ -1,7 +1,8 @@
 """Knowledge Engine tool-call contract (transport-independent).
 
-Defines the stable public interface external software uses to call the
-Knowledge Engine without the CLI and without any knowledge of SQLite:
+This module implements Public Contract v1 (see ``docs/public-api-v1.md``) --
+the stable public interface external software uses to call the Knowledge
+Engine without the CLI and without any knowledge of SQLite:
 
     Tool request -> validated operation -> KnowledgeAPI -> structured response
 
@@ -76,6 +77,12 @@ VALID_RELATIONSHIP_KINDS = frozenset(_VALID_RELATIONSHIP_KINDS)
 # net on top of the API's own limit handling; the CLI applies the same caps).
 MAX_RESULTS = 100
 DEFAULT_SEARCH_LIMIT = 20
+
+# Stability marker for the public tool-call contract. Every tool response
+# (success and error) carries this value as ``contract_version``. Contract
+# v1 semantics are frozen: a future breaking change must become v2 instead of
+# silently changing v1 behavior.
+CONTRACT_VERSION = "1"
 
 
 # -- argument validators ---------------------------------------------------
