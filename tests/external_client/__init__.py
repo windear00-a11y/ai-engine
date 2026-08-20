@@ -1,0 +1,1 @@
+"""Independent external client integration tests (package marker)."""
