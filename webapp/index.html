@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Knowledge Engine</title>
+<style>
+/* Reset & Base */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #fafafa; --surface: #fff; --border: #e0e0e0;
+  --text: #212121; --text-secondary: #616161; --text-tertiary: #9e9e9e;
+  --primary: #1565c0; --primary-light: #e3f2fd;
+  --accent: #2e7d32; --accent-light: #e8f5e9;
+  --error: #c62828; --error-light: #ffebee;
+  --warn: #f57f17; --warn-light: #fff8e1;
+  --radius: 6px; --shadow: 0 1px 3px rgba(0,0,0,.08);
+  --max-w: 960px; --gutter: 16px;
+}
+html { font-size: 15px; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5;
+  min-height: 100vh; display: flex; flex-direction: column;
+}
+a { color: var(--primary); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button {
+  font: inherit; cursor: pointer; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); border-radius: var(--radius);
+  padding: 6px 14px; transition: background .15s;
+}
+button:hover { background: #f5f5f5; }
+button:disabled { opacity: .5; cursor: default; }
+
+/* Layout */
+.header {
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: 12px var(--gutter); position: sticky; top: 0; z-index: 10;
+}
+.header-inner { max-width: var(--max-w); margin: 0 auto; display: flex; align-items: center; gap: 20px; }
+.header h1 { font-size: 1.15rem; font-weight: 600; white-space: nowrap; }
+.header h1 span { color: var(--primary); }
+nav { display: flex; gap: 4px; }
+nav a {
+  padding: 4px 10px; border-radius: var(--radius); font-size: .9rem;
+  color: var(--text-secondary); transition: background .15s;
+}
+nav a:hover, nav a.active { background: var(--primary-light); color: var(--primary); text-decoration: none; }
+.main { flex: 1; max-width: var(--max-w); width: 100%; margin: 0 auto; padding: var(--gutter); }
+.footer {
+  text-align: center; padding: 16px; font-size: .8rem; color: var(--text-tertiary);
+  border-top: 1px solid var(--border);
+}
+
+/* Cards */
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px; margin-bottom: 12px;
+  box-shadow: var(--shadow); transition: box-shadow .15s;
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+.card-title { font-size: 1.05rem; font-weight: 600; margin-bottom: 4px; }
+.card-type {
+  display: inline-block; font-size: .75rem; font-weight: 500;
+  padding: 2px 8px; border-radius: 10px; margin-bottom: 6px;
+}
+.type-concept { background: #e3f2fd; color: #1565c0; }
+.type-technology { background: #e8f5e9; color: #2e7d32; }
+.type-entity { background: #fff3e0; color: #e65100; }
+.type-procedure { background: #f3e5f5; color: #7b1fa2; }
+.type-rule { background: #fce4ec; color: #c62828; }
+.type-example { background: #e0f7fa; color: #00695c; }
+.type-dependency { background: #efebe9; color: #4e342e; }
+.card-meta { font-size: .85rem; color: var(--text-secondary); }
+.card-desc { margin-top: 6px; font-size: .9rem; color: var(--text-secondary); }
+.card-score { font-size: .8rem; color: var(--text-tertiary); margin-top: 4px; }
+.card-clickable { cursor: pointer; }
+.card-clickable:hover { border-color: var(--primary); }
+
+/* Search */
+.search-box {
+  display: flex; gap: 8px; margin-bottom: 20px;
+}
+.search-box input {
+  flex: 1; font: inherit; padding: 10px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 1rem; outline: none; transition: border-color .15s;
+}
+.search-box input:focus { border-color: var(--primary); }
+.search-box button {
+  padding: 10px 20px; background: var(--primary); color: #fff;
+  border: none; font-weight: 500;
+}
+.search-box button:hover { background: #1976d2; }
+.search-box button:disabled { background: #90caf9; }
+
+/* States */
+.loading { text-align: center; padding: 40px; color: var(--text-secondary); }
+.loading::after { content: ""; display: inline-block; width: 20px; height: 20px;
+  border: 2px solid var(--border); border-top-color: var(--primary);
+  border-radius: 50%; animation: spin .6s linear infinite; margin-left: 8px; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.empty { text-align: center; padding: 40px; color: var(--text-tertiary); }
+.error-box {
+  background: var(--error-light); border: 1px solid #ef9a9a;
+  border-radius: var(--radius); padding: 12px 16px; margin-bottom: 12px;
+  color: var(--error); font-size: .9rem;
+}
+.error-box .retry { margin-top: 8px; }
+.warn-box {
+  background: var(--warn-light); border: 1px solid #ffe082;
+  border-radius: var(--radius); padding: 12px 16px; margin-bottom: 12px;
+  color: var(--warn); font-size: .9rem;
+}
+
+/* Details */
+.detail-header { margin-bottom: 16px; }
+.detail-header h2 { font-size: 1.3rem; margin-bottom: 4px; }
+.detail-section { margin-bottom: 20px; }
+.detail-section h3 {
+  font-size: .85rem; text-transform: uppercase; letter-spacing: .5px;
+  color: var(--text-tertiary); margin-bottom: 8px;
+}
+.detail-desc { font-size: .95rem; line-height: 1.6; }
+.back-link { display: inline-block; margin-bottom: 16px; font-size: .9rem; }
+
+/* Relationships */
+.rel-list { list-style: none; }
+.rel-item {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  margin-bottom: 6px; cursor: pointer; transition: border-color .15s;
+}
+.rel-item:hover { border-color: var(--primary); }
+.rel-badge {
+  font-size: .7rem; font-weight: 500; padding: 2px 6px;
+  border-radius: 8px; background: var(--primary-light); color: var(--primary);
+  white-space: nowrap;
+}
+
+/* Provenance */
+.prov-item {
+  padding: 10px 14px; border: 1px solid var(--border);
+  border-radius: var(--radius); margin-bottom: 8px;
+}
+.prov-field { font-size: .85rem; margin-bottom: 2px; }
+.prov-label { color: var(--text-tertiary); font-weight: 500; }
+.prov-value { color: var(--text); }
+.prov-evidence {
+  margin-top: 6px; padding: 8px 10px; background: #f5f5f5;
+  border-radius: var(--radius); font-size: .85rem;
+  font-family: "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap;
+  border-left: 3px solid var(--primary);
+}
+
+/* Inspect */
+.stat-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px; margin-bottom: 20px;
+}
+.stat-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px; text-align: center;
+  box-shadow: var(--shadow);
+}
+.stat-value { font-size: 1.6rem; font-weight: 700; color: var(--primary); }
+.stat-label { font-size: .8rem; color: var(--text-tertiary); margin-top: 2px; }
+
+/* Follow controls */
+.follow-controls { margin-bottom: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
+.follow-controls select {
+  font: inherit; padding: 6px 10px; border: 1px solid var(--border);
+  border-radius: var(--radius); font-size: .9rem;
+}
+
+/* Breadcrumb */
+.breadcrumb { font-size: .85rem; color: var(--text-tertiary); margin-bottom: 12px; }
+.breadcrumb span { cursor: pointer; }
+.breadcrumb span:hover { color: var(--primary); }
+
+/* Responsive */
+@media (max-width: 600px) {
+  .header-inner { flex-wrap: wrap; gap: 8px; }
+  nav { width: 100%; justify-content: center; }
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-inner">
+    <h1><span>K</span>nowledge Engine</h1>
+    <nav>
+      <a href="#search" data-nav="search">Search</a>
+      <a href="#status" data-nav="status">Status</a>
+    </nav>
+  </div>
+</header>
+
+<main class="main" id="app"></main>
+
+<footer class="footer">
+  Knowledge Engine &middot; Contract v1 &middot; Read-only client
+</footer>
+
+<script>
+/* ================================================================
+   Knowledge Engine Web App v1
+   A read-only browser for the Knowledge Engine Public Contract v1.
+
+   Architecture:
+     Browser -> webapp/index.html -> HTTP -> POST /v1/execute -> Contract v1
+
+   This file contains NO sqlite3, NO retrieval, NO api internals.
+   All knowledge access goes through the HTTP API.
+   ================================================================ */
+
+(function() {
+"use strict";
+
+// -- Configuration --------------------------------------------------------
+const CONFIG = {
+  apiBase: (function() {
+    // Configurable via ?api=http://host:port or defaults to same origin
+    var params = new URLSearchParams(window.location.search);
+    return params.get("api") || "";
+  })()
+};
+
+// -- Forbidden module audit (test-visible) --------------------------------
+const FORBIDDEN_PATTERNS = [
+  /sqlite3/i, /retrieval/i, /knowledge_api/i, /repository/i,
+  /ingestion/i, /knowledge_compiler/i, /\.db\b/i
+];
+
+// -- Error messages -------------------------------------------------------
+const ERROR_MESSAGES = {
+  "invalid_request":      "Invalid request. Please check your input.",
+  "unknown_operation":    "Unknown operation.",
+  "invalid_argument":     "Invalid argument. Please check your input.",
+  "invalid_relationship_type": "Invalid relationship type.",
+  "node_not_found":       "Node not found.",
+  "internal_error":       "An internal error occurred. Please try again.",
+  "unauthorized":         "Authentication required.",
+  "client:transport":     "Could not connect to the server.",
+  "client:invalid_response": "Received an invalid response from the server."
+};
+
+// -- API Module -----------------------------------------------------------
+const API = {
+  async execute(operation, args) {
+    var body = { operation: operation };
+    if (args && Object.keys(args).length > 0) body.arguments = args;
+    var url = CONFIG.apiBase + "/v1/execute";
+    var resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    var data = await resp.json();
+    if (!data.ok) {
+      var code = (data.error && data.error.code) || "internal_error";
+      var msg = (data.error && data.error.message) || ERROR_MESSAGES[code] || "Unknown error";
+      var err = new Error(msg);
+      err.code = code;
+      err.details = data.error;
+      throw err;
+    }
+    return data;
+  },
+  async health() {
+    var resp = await fetch(CONFIG.apiBase + "/health");
+    return await resp.json();
+  },
+  search(query, limit) { return this.execute("search", { query: query, limit: limit || 20 }); },
+  get(nodeId) { return this.execute("get", { node_id: nodeId }); },
+  related(nodeId, limit) { return this.execute("related", { node_id: nodeId, limit: limit || 20 }); },
+  follow(nodeId, relType) {
+    var args = { node_id: nodeId };
+    if (relType) args.relationship_type = relType;
+    return this.execute("follow", args);
+  },
+  provenance(nodeId) { return this.execute("provenance", { node_id: nodeId }); },
+  inspect() { return this.execute("inspect"); }
+};
+
+// -- State ----------------------------------------------------------------
+var state = {
+  view: "search",
+  query: "",
+  results: null,
+  currentNode: null,
+  nodeData: null,
+  relatedData: null,
+  followData: null,
+  followType: null,
+  provenanceData: null,
+  inspectData: null,
+  loading: false,
+  error: null,
+  history: []
+};
+
+// -- Router ---------------------------------------------------------------
+function navigate(view, opts) {
+  opts = opts || {};
+  state.view = view;
+  state.error = null;
+  state.loading = false;
+  if (opts.query !== undefined) state.query = opts.query;
+  if (opts.nodeId !== undefined) state.currentNode = opts.nodeId;
+  if (opts.clearNode !== false && view !== "node") {
+    state.nodeData = null;
+    state.relatedData = null;
+    state.followData = null;
+    state.followType = null;
+    state.provenanceData = null;
+  }
+  render();
+  window.scrollTo(0, 0);
+}
+
+function setHash(view) {
+  window.location.hash = view;
+}
+
+// -- Rendering helpers ----------------------------------------------------
+function el(tag, attrs, children) {
+  var e = document.createElement(tag);
+  if (attrs) Object.keys(attrs).forEach(function(k) {
+    if (k === "className") e.className = attrs[k];
+    else if (k === "textContent") e.textContent = attrs[k];
+    else if (k === "innerHTML") e.innerHTML = attrs[k];
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2).toLowerCase(), attrs[k]);
+    else e.setAttribute(k, attrs[k]);
+  });
+  if (children) {
+    if (!Array.isArray(children)) children = [children];
+    children.forEach(function(c) {
+      if (c == null) return;
+      e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+    });
+  }
+  return e;
+}
+
+function typeClass(t) { return "card-type type-" + (t || "entity"); }
+
+function errorMessage(code) { return ERROR_MESSAGES[code] || "An error occurred."; }
+
+// -- Render functions -----------------------------------------------------
+function render() {
+  var app = document.getElementById("app");
+  app.innerHTML = "";
+  // Update nav
+  document.querySelectorAll("nav a").forEach(function(a) {
+    a.classList.toggle("active", a.getAttribute("data-nav") === state.view ||
+      (state.view === "node" && a.getAttribute("data-nav") === "search"));
+  });
+  switch (state.view) {
+    case "search": renderSearch(app); break;
+    case "node": renderNode(app); break;
+    case "status": renderStatus(app); break;
+    default: renderSearch(app);
+  }
+}
+
+function renderSearch(container) {
+  // Search box
+  var form = el("div", { className: "search-box" });
+  var input = el("input", {
+    type: "text", id: "search-input", placeholder: "Search knowledge...",
+    value: state.query
+  });
+  input.addEventListener("keydown", function(e) {
+    if (e.key === "Enter") doSearch();
+  });
+  var btn = el("button", { id: "search-btn", textContent: "Search" }, []);
+  btn.addEventListener("click", doSearch);
+  form.appendChild(input);
+  form.appendChild(btn);
+  container.appendChild(form);
+
+  // Loading
+  if (state.loading) {
+    container.appendChild(el("div", { className: "loading", textContent: "Searching..." }));
+    return;
+  }
+  // Error
+  if (state.error) {
+    container.appendChild(renderError(state.error, doSearch));
+    return;
+  }
+  // Results
+  if (state.results) {
+    var items = state.results.result || state.results;
+    if (!items || items.length === 0) {
+      container.appendChild(el("div", { className: "empty", textContent: "No results found." }));
+      return;
+    }
+    var list = el("div");
+    items.forEach(function(item) {
+      var card = el("div", { className: "card card-clickable" });
+      card.addEventListener("click", function() {
+        navigate("node", { nodeId: item.id });
+        loadNode(item.id);
+      });
+      if (item.type) card.appendChild(el("span", { className: typeClass(item.type), textContent: item.type }));
+      card.appendChild(el("div", { className: "card-title", textContent: item.name || item.id }));
+      if (item.description) card.appendChild(el("div", { className: "card-desc", textContent: truncate(item.description, 160) }));
+      if (item.score !== undefined) card.appendChild(el("div", { className: "card-score", textContent: "Score: " + item.score.toFixed(2) }));
+      if (item.id && item.id !== item.name) card.appendChild(el("div", { className: "card-meta", textContent: "ID: " + item.id }));
+      list.appendChild(card);
+    });
+    container.appendChild(list);
+  } else if (!state.query) {
+    container.appendChild(el("div", { className: "empty", textContent: "Enter a query to search the knowledge base." }));
+  }
+}
+
+function renderNode(container) {
+  // Back link
+  container.appendChild(el("a", {
+    className: "back-link", href: "#",
+    textContent: "\u2190 Back to search"
+  }, []));
+  container.lastChild.addEventListener("click", function(e) { e.preventDefault(); navigate("search"); });
+
+  if (state.loading) {
+    container.appendChild(el("div", { className: "loading", textContent: "Loading..." }));
+    return;
+  }
+  if (state.error) {
+    container.appendChild(renderError(state.error, function() { loadNode(state.currentNode); }));
+    return;
+  }
+  var data = state.nodeData;
+  if (!data) return;
+  var node = data.result || data;
+
+  // Header
+  var header = el("div", { className: "detail-header" });
+  if (node.type) header.appendChild(el("span", { className: typeClass(node.type), textContent: node.type }));
+  header.appendChild(el("h2", { textContent: node.name || node.id }));
+  if (node.id && node.id !== node.name) header.appendChild(el("div", { className: "card-meta", textContent: "ID: " + node.id }));
+  container.appendChild(header);
+
+  // Description
+  if (node.description) {
+    var sec = el("div", { className: "detail-section" });
+    sec.appendChild(el("h3", { textContent: "Description" }));
+    sec.appendChild(el("div", { className: "detail-desc", textContent: node.description }));
+    container.appendChild(sec);
+  }
+
+  // Relationships
+  if (node.relationships && node.relationships.length > 0) {
+    var sec = el("div", { className: "detail-section" });
+    sec.appendChild(el("h3", { textContent: "Relationships" }));
+    var list = el("ul", { className: "rel-list" });
+    node.relationships.forEach(function(rel) {
+      var item = el("li", { className: "rel-item" });
+      item.appendChild(el("span", { className: "rel-badge", textContent: rel.type }));
+      var target = el("span", { textContent: rel.target_id || rel.target || "?" });
+      item.appendChild(target);
+      item.addEventListener("click", function() {
+        var tid = rel.target_id || rel.target;
+        if (tid) { navigate("node", { nodeId: tid }); loadNode(tid); }
+      });
+      list.appendChild(item);
+    });
+    sec.appendChild(list);
+    container.appendChild(sec);
+  }
+
+  // Action buttons
+  var actions = el("div", { className: "detail-section", style: "display:flex;gap:8px;flex-wrap:wrap" });
+  var relatedBtn = el("button", { textContent: "Related" });
+  relatedBtn.addEventListener("click", function() { loadRelated(node.id); });
+  actions.appendChild(relatedBtn);
+
+  var followBtn = el("button", { textContent: "Follow" });
+  followBtn.addEventListener("click", function() { loadFollow(node.id); });
+  actions.appendChild(followBtn);
+
+  var provBtn = el("button", { textContent: "Provenance" });
+  provBtn.addEventListener("click", function() { loadProvenance(node.id); });
+  actions.appendChild(provBtn);
+  container.appendChild(actions);
+
+  // Related section
+  if (state.relatedData) {
+    var sec = el("div", { className: "detail-section" });
+    sec.appendChild(el("h3", { textContent: "Related Nodes" }));
+    var items = state.relatedData.result || [];
+    if (items.length === 0) {
+      sec.appendChild(el("div", { className: "empty", textContent: "No related nodes." }));
+    } else {
+      var list = el("ul", { className: "rel-list" });
+      items.forEach(function(r) {
+        var item = el("li", { className: "rel-item" });
+        var name = r.node ? r.node.name : (r.name || r.id || "?");
+        var type = r.node ? r.node.type : r.type;
+        if (type) item.appendChild(el("span", { className: typeClass(type), textContent: type }));
+        item.appendChild(el("span", { textContent: name }));
+        if (r.via) item.appendChild(el("span", { className: "rel-badge", textContent: r.via.type || r.via }));
+        item.addEventListener("click", function() {
+          var nid = r.node ? r.node.id : r.id;
+          if (nid) { navigate("node", { nodeId: nid }); loadNode(nid); }
+        });
+        list.appendChild(item);
+      });
+      sec.appendChild(list);
+    }
+    container.appendChild(sec);
+  }
+
+  // Follow section
+  if (state.followData) {
+    var sec = el("div", { className: "detail-section" });
+    sec.appendChild(el("h3", { textContent: "Follow: " + (state.followType || "all") }));
+
+    // Type selector
+    if (state.nodeData && state.nodeData.result && state.nodeData.result.relationships) {
+      var types = [];
+      state.nodeData.result.relationships.forEach(function(r) {
+        if (types.indexOf(r.type) === -1) types.push(r.type);
+      });
+      if (types.length > 0) {
+        var controls = el("div", { className: "follow-controls" });
+        var sel = el("select", { id: "follow-type" });
+        sel.appendChild(el("option", { value: "", textContent: "All types" }));
+        types.forEach(function(t) {
+          var opt = el("option", { value: t, textContent: t });
+          if (t === state.followType) opt.selected = true;
+          sel.appendChild(opt);
+        });
+        sel.addEventListener("change", function() {
+          state.followType = this.value || null;
+          loadFollow(state.currentNode, state.followType);
+        });
+        controls.appendChild(sel);
+        sec.appendChild(controls);
+      }
+    }
+
+    var items = state.followData.result || [];
+    if (items.length === 0) {
+      sec.appendChild(el("div", { className: "empty", textContent: "No results." }));
+    } else {
+      var list = el("ul", { className: "rel-list" });
+      items.forEach(function(edge) {
+        var item = el("li", { className: "rel-item" });
+        if (edge.relationship_type) item.appendChild(el("span", { className: "rel-badge", textContent: edge.relationship_type }));
+        var name = edge.name || edge.target_id || edge.id || "?";
+        item.appendChild(el("span", { textContent: name }));
+        item.addEventListener("click", function() {
+          var tid = edge.target_id || edge.id;
+          if (tid) { navigate("node", { nodeId: tid }); loadNode(tid); }
+        });
+        list.appendChild(item);
+      });
+      sec.appendChild(list);
+    }
+    container.appendChild(sec);
+  }
+
+  // Provenance section
+  if (state.provenanceData) {
+    var sec = el("div", { className: "detail-section" });
+    sec.appendChild(el("h3", { textContent: "Provenance" }));
+    var items = state.provenanceData.result || [];
+    if (items.length === 0) {
+      sec.appendChild(el("div", { className: "empty", textContent: "No provenance available." }));
+    } else {
+      items.forEach(function(p) {
+        var card = el("div", { className: "prov-item" });
+        if (p.source_name) card.appendChild(el("div", { className: "prov-field", innerHTML: "<span class='prov-label'>Source: </span><span class='prov-value'>" + esc(p.source_name) + "</span>" }));
+        if (p.location) card.appendChild(el("div", { className: "prov-field", innerHTML: "<span class='prov-label'>Location: </span><span class='prov-value'>" + esc(p.location) + "</span>" }));
+        if (p.section) card.appendChild(el("div", { className: "prov-field", innerHTML: "<span class='prov-label'>Section: </span><span class='prov-value'>" + esc(p.section) + "</span>" }));
+        if (p.document) card.appendChild(el("div", { className: "prov-field", innerHTML: "<span class='prov-label'>Document: </span><span class='prov-value'>" + esc(p.document) + "</span>" }));
+        if (p.evidence) card.appendChild(el("div", { className: "prov-evidence", textContent: p.evidence }));
+        sec.appendChild(card);
+      });
+    }
+    container.appendChild(sec);
+  }
+}
+
+function renderStatus(container) {
+  if (state.loading) {
+    container.appendChild(el("div", { className: "loading", textContent: "Loading status..." }));
+    return;
+  }
+  if (state.error) {
+    container.appendChild(renderError(state.error, loadStatus));
+    return;
+  }
+  if (!state.inspectData) {
+    container.appendChild(el("div", { className: "empty", textContent: "No data." }));
+    return;
+  }
+  var r = state.inspectData.result || state.inspectData;
+
+  container.appendChild(el("h2", { textContent: "Knowledge Statistics", style: "margin-bottom:16px" }));
+
+  var grid = el("div", { className: "stat-grid" });
+  grid.appendChild(statCard(r.node_count, "Nodes"));
+  grid.appendChild(statCard(r.relationship_count, "Relationships"));
+  grid.appendChild(statCard(r.source_count, "Sources"));
+  container.appendChild(grid);
+
+  if (r.nodes_by_type) {
+    var sec = el("div", { className: "detail-section" });
+    sec.appendChild(el("h3", { textContent: "Nodes by Type" }));
+    var tbl = el("div");
+    Object.keys(r.nodes_by_type).sort().forEach(function(t) {
+      tbl.appendChild(el("div", { className: "card", style: "display:flex;justify-content:space-between;align-items:center" },
+        [el("span", { className: typeClass(t), textContent: t }),
+         el("span", { textContent: String(r.nodes_by_type[t]), style: "font-weight:600" })]));
+    });
+    sec.appendChild(tbl);
+    container.appendChild(sec);
+  }
+
+  if (r.relationships_by_type) {
+    var sec = el("div", { className: "detail-section" });
+    sec.appendChild(el("h3", { textContent: "Relationships by Type" }));
+    var tbl = el("div");
+    Object.keys(r.relationships_by_type).sort().forEach(function(t) {
+      tbl.appendChild(el("div", { className: "card", style: "display:flex;justify-content:space-between;align-items:center" },
+        [el("span", { className: "rel-badge", textContent: t }),
+         el("span", { textContent: String(r.relationships_by_type[t]), style: "font-weight:600" })]));
+    });
+    sec.appendChild(tbl);
+    container.appendChild(sec);
+  }
+
+  // Server health
+  if (state.healthData) {
+    var sec = el("div", { className: "detail-section" });
+    sec.appendChild(el("h3", { textContent: "Server" }));
+    var h = state.healthData;
+    var info = el("div", { className: "card" });
+    info.appendChild(el("div", { className: "card-meta", textContent: "Contract version: " + (h.contract_version || "?") }));
+    if (h.uptime !== undefined) info.appendChild(el("div", { className: "card-meta", textContent: "Uptime: " + formatDuration(h.uptime) }));
+    if (h.request_count !== undefined) info.appendChild(el("div", { className: "card-meta", textContent: "Requests served: " + h.request_count }));
+    container.appendChild(info);
+  }
+}
+
+function statCard(value, label) {
+  var c = el("div", { className: "stat-card" });
+  c.appendChild(el("div", { className: "stat-value", textContent: value != null ? String(value) : "-" }));
+  c.appendChild(el("div", { className: "stat-label", textContent: label }));
+  return c;
+}
+
+function renderError(err, retryFn) {
+  var code = err.code || "error";
+  var msg = typeof err === "string" ? err : (err.message || "An error occurred.");
+  var box = el("div", { className: "error-box" });
+  box.appendChild(el("div", { textContent: msg }));
+  if (retryFn) {
+    var btn = el("button", { className: "retry", textContent: "Retry" });
+    btn.addEventListener("click", retryFn);
+    box.appendChild(btn);
+  }
+  return box;
+}
+
+// -- Helpers --------------------------------------------------------------
+function truncate(s, n) { return s.length > n ? s.slice(0, n) + "..." : s; }
+function esc(s) { var d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+function formatDuration(s) {
+  if (s < 1) return Math.round(s * 1000) + "ms";
+  if (s < 60) return s.toFixed(1) + "s";
+  return Math.floor(s / 60) + "m " + Math.round(s % 60) + "s";
+}
+
+// -- Data loaders ---------------------------------------------------------
+function doSearch() {
+  var input = document.getElementById("search-input");
+  var q = (input ? input.value : "").trim();
+  if (!q) return;
+  state.query = q;
+  state.loading = true;
+  state.error = null;
+  state.results = null;
+  render();
+  API.search(q).then(function(data) {
+    state.results = data;
+    state.loading = false;
+    render();
+  }).catch(function(err) {
+    state.error = err;
+    state.loading = false;
+    render();
+  });
+}
+
+function loadNode(id) {
+  state.loading = true;
+  state.error = null;
+  state.nodeData = null;
+  state.relatedData = null;
+  state.followData = null;
+  state.provenanceData = null;
+  render();
+  API.get(id).then(function(data) {
+    state.nodeData = data;
+    state.loading = false;
+    render();
+  }).catch(function(err) {
+    state.error = err;
+    state.loading = false;
+    render();
+  });
+}
+
+function loadRelated(id) {
+  state.loading = true;
+  state.error = null;
+  state.relatedData = null;
+  render();
+  API.related(id).then(function(data) {
+    state.relatedData = data;
+    state.loading = false;
+    render();
+  }).catch(function(err) {
+    state.error = err;
+    state.loading = false;
+    render();
+  });
+}
+
+function loadFollow(id, relType) {
+  state.loading = true;
+  state.error = null;
+  state.followData = null;
+  render();
+  API.follow(id, relType).then(function(data) {
+    state.followData = data;
+    state.loading = false;
+    render();
+  }).catch(function(err) {
+    state.error = err;
+    state.loading = false;
+    render();
+  });
+}
+
+function loadProvenance(id) {
+  state.loading = true;
+  state.error = null;
+  state.provenanceData = null;
+  render();
+  API.provenance(id).then(function(data) {
+    state.provenanceData = data;
+    state.loading = false;
+    render();
+  }).catch(function(err) {
+    state.error = err;
+    state.loading = false;
+    render();
+  });
+}
+
+function loadStatus() {
+  state.loading = true;
+  state.error = null;
+  state.inspectData = null;
+  state.healthData = null;
+  render();
+  Promise.all([API.inspect(), API.health()]).then(function(results) {
+    state.inspectData = results[0];
+    state.healthData = results[1];
+    state.loading = false;
+    render();
+  }).catch(function(err) {
+    state.error = err;
+    state.loading = false;
+    render();
+  });
+}
+
+// -- Routing --------------------------------------------------------------
+function onHashChange() {
+  var hash = window.location.hash.slice(1) || "search";
+  if (hash === "status") {
+    navigate("status");
+    loadStatus();
+  } else if (hash.startsWith("node/")) {
+    var id = decodeURIComponent(hash.slice(5));
+    navigate("node", { nodeId: id });
+    loadNode(id);
+  } else {
+    navigate("search");
+  }
+}
+
+window.addEventListener("hashchange", onHashChange);
+
+// -- Init -----------------------------------------------------------------
+onHashChange();
+
+// -- Test-visible exports -------------------------------------------------
+window.KE = {
+  API: API,
+  CONFIG: CONFIG,
+  FORBIDDEN_PATTERNS: FORBIDDEN_PATTERNS,
+  ERROR_MESSAGES: ERROR_MESSAGES,
+  state: state,
+  navigate: navigate,
+  render: render,
+  doSearch: doSearch,
+  loadNode: loadNode,
+  loadRelated: loadRelated,
+  loadFollow: loadFollow,
+  loadProvenance: loadProvenance,
+  loadStatus: loadStatus
+};
+
+})();
+</script>
+</body>
+</html>
