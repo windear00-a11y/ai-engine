@@ -73,9 +73,9 @@ CREATE INDEX IF NOT EXISTS idx_rel_target ON relationships(target_node_id);
 
 
 class KnowledgeRepository:
-    def __init__(self, db_path=":memory:"):
+    def __init__(self, db_path=":memory:", check_same_thread=True):
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, check_same_thread=check_same_thread)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
 
