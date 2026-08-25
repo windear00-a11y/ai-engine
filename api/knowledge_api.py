@@ -93,6 +93,9 @@ class KnowledgeAPI:
         id/type/name/description/metadata). Results are ordered by score
         (descending) then node id (ascending), and each result retains its
         ``_score`` so callers can surface ranking. An empty query returns ``[]``.
+
+        Ranking/filtering/limiting run on lightweight fields; only the final
+        returned nodes are hydrated (batched provenance + relationships).
         """
         if not isinstance(query, str):
             raise KnowledgeArgumentError(
@@ -100,12 +103,19 @@ class KnowledgeAPI:
         node_type = self._validate_node_type(node_type)
         limit = self._validate_limit(limit)
 
-        results = self.store.repo.search_nodes(query, limit=None)
+        ranked = self.store.repo.search_rankings(query)
         if node_type is not None:
-            results = [n for n in results if n.get("type") == node_type]
-        results.sort(key=lambda n: (-(n.get("_score") or 0), n.get("id") or ""))
+            ranked = [r for r in ranked if r[2] == node_type]
+        ranked.sort(key=lambda r: (-r[0], r[1]))
         if limit is not None:
-            results = results[:limit]
+            ranked = ranked[:limit]
+        hydrated = {n["id"]: n for n in
+                    self.store.repo.hydrate_nodes([r[1] for r in ranked])}
+        results = []
+        for score, node_id, _type in ranked:
+            node = hydrated[node_id]
+            node["_score"] = score
+            results.append(node)
         return results
 
     # -- get ---------------------------------------------------------------
