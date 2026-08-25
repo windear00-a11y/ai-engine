@@ -381,5 +381,148 @@ class HttpEngineLifecycleTests(unittest.TestCase):
         self.assertIsNone(self.server._interface)
 
 
+class HttpCorsTests(unittest.TestCase):
+    """CORS support: OPTIONS preflight + headers on all JSON responses."""
+
+    def setUp(self):
+        self.tmp, self.db = _temp_db()
+        self.server, self.port = _start_server(self.db)
+        self.base = "http://127.0.0.1:%d" % self.port
+
+    def tearDown(self):
+        _close_server(self.server)
+
+    def _post(self, body, headers=None):
+        import urllib.request
+        req = urllib.request.Request(
+            self.base + "/v1/execute",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json", **(headers or {})},
+            method="POST")
+        with urllib.request.urlopen(req) as r:
+            return r.getheader("Access-Control-Allow-Origin"), r.status
+
+    def _options(self, extra_headers=None):
+        import urllib.request
+        headers = {
+            "Origin": "http://localhost:8766",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Content-Type",
+        }
+        if extra_headers:
+            headers.update(extra_headers)
+        req = urllib.request.Request(
+            self.base + "/v1/execute", method="OPTIONS", headers=headers)
+        with urllib.request.urlopen(req) as r:
+            return {k: r.getheader(k) for k in [
+                "Access-Control-Allow-Origin",
+                "Access-Control-Allow-Methods",
+                "Access-Control-Allow-Headers",
+            ]}, r.status
+
+    def _get_headers(self, path):
+        import urllib.request, urllib.error
+        req = urllib.request.Request(self.base + path, method="GET")
+        try:
+            r = urllib.request.urlopen(req)
+            return r.getheader("Access-Control-Allow-Origin"), r.status
+        except urllib.error.HTTPError as e:
+            return e.headers.get("Access-Control-Allow-Origin"), e.code
+
+    # -- OPTIONS preflight -------------------------------------------------
+
+    def test_options_preflight_returns_200(self):
+        _, status = self._options()
+        self.assertEqual(status, 200)
+
+    def test_options_preflight_allow_origin_wildcard(self):
+        headers, _ = self._options()
+        self.assertEqual(headers["Access-Control-Allow-Origin"], "*")
+
+    def test_options_preflight_allow_methods(self):
+        headers, _ = self._options()
+        self.assertEqual(headers["Access-Control-Allow-Methods"], "POST, OPTIONS")
+
+    def test_options_preflight_allow_headers(self):
+        headers, _ = self._options()
+        self.assertIn("Content-Type", headers["Access-Control-Allow-Headers"])
+        self.assertIn("Authorization", headers["Access-Control-Allow-Headers"])
+
+    # -- CORS headers on JSON responses ------------------------------------
+
+    def test_post_success_has_cors_allow_origin(self):
+        origin, status = self._post({"operation": "inspect"})
+        self.assertEqual(status, 200)
+        self.assertEqual(origin, "*")
+
+    def test_health_has_cors_headers(self):
+        origin, status = self._get_headers("/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(origin, "*")
+
+    def test_error_response_has_cors_headers(self):
+        """Errors must carry CORS headers so the browser can read them."""
+        import urllib.request, urllib.error
+        req = urllib.request.Request(
+            self.base + "/v1/execute",
+            data=json.dumps({"operation": "nope"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST")
+        try:
+            r = urllib.request.urlopen(req)
+            self.assertEqual(r.getheader("Access-Control-Allow-Origin"), "*")
+            self.assertEqual(r.status, 404)
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.headers.get("Access-Control-Allow-Origin"), "*")
+            self.assertEqual(e.code, 404)
+
+    def test_404_endpoint_has_cors_headers(self):
+        origin, status = self._get_headers("/nonexistent")
+        self.assertEqual(status, 404)
+        self.assertEqual(origin, "*")
+
+    # -- API key still enforced --------------------------------------------
+
+    def test_api_key_still_enforced_with_cors(self):
+        server_with_key, base_port = _start_server(self.db, api_key="secret")
+        base = "http://127.0.0.1:%d" % base_port
+        try:
+            import urllib.request, urllib.error
+            # No key -> 401; CORS header still present (so browser can read it)
+            req = urllib.request.Request(
+                base + "/v1/execute",
+                data=json.dumps({"operation": "inspect"}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST")
+            try:
+                r = urllib.request.urlopen(req)
+                self.assertEqual(r.getheader("Access-Control-Allow-Origin"), "*")
+                self.assertEqual(r.status, 401)
+            except urllib.error.HTTPError as e:
+                self.assertEqual(e.headers.get("Access-Control-Allow-Origin"), "*")
+                self.assertEqual(e.code, 401)
+        finally:
+            _close_server(server_with_key)
+
+    def test_bearer_auth_still_accepted_with_cors(self):
+        server_with_key, base_port = _start_server(self.db, api_key="secret")
+        base = "http://127.0.0.1:%d" % base_port
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                base + "/v1/execute",
+                data=json.dumps({"operation": "inspect"}).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer secret",
+                },
+                method="POST")
+            with urllib.request.urlopen(req) as r:
+                self.assertEqual(r.getheader("Access-Control-Allow-Origin"), "*")
+                self.assertEqual(r.status, 200)
+        finally:
+            _close_server(server_with_key)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -505,7 +505,11 @@ function renderNode(container) {
         var type = r.node ? r.node.type : r.type;
         if (type) item.appendChild(el("span", { className: typeClass(type), textContent: type }));
         item.appendChild(el("span", { textContent: name }));
-        if (r.via) item.appendChild(el("span", { className: "rel-badge", textContent: r.via.type || r.via }));
+        if (r.via) {
+          var _via = Array.isArray(r.via) ? r.via[0] : r.via;
+          var _viaLabel = (_via && (_via.relationship_type || _via.type)) || "via";
+          item.appendChild(el("span", { className: "rel-badge", textContent: _viaLabel }));
+        }
         item.addEventListener("click", function() {
           var nid = r.node ? r.node.id : r.id;
           if (nid) { navigate("node", { nodeId: nid }); loadNode(nid); }
@@ -571,7 +575,8 @@ function renderNode(container) {
   if (state.provenanceData) {
     var sec = el("div", { className: "detail-section" });
     sec.appendChild(el("h3", { textContent: "Provenance" }));
-    var items = state.provenanceData.result || [];
+    var items = state.provenanceData.result;
+    items = items ? (Array.isArray(items) ? items : [items]) : [];
     if (items.length === 0) {
       sec.appendChild(el("div", { className: "empty", textContent: "No provenance available." }));
     } else {

@@ -587,5 +587,92 @@ class WebAppConfigTests(unittest.TestCase):
         self.assertNotIn("POST", health_section)
 
 
+# ---------------------------------------------------------------------------
+# Related via rendering regression (array vs object vs missing)
+# ---------------------------------------------------------------------------
+
+class WebAppViaFixTests(unittest.TestCase):
+    """Related section correctly renders the via field.
+
+    Contract v1 related returns via as an array of {direction, relationship_type}
+    objects.  The Web App must extract the label without producing [object Object].
+    """
+
+    def setUp(self):
+        self.html = _read_webapp()
+
+    def test_via_array_extracted(self):
+        """Source uses Array.isArray(r.via) to handle array via."""
+        self.assertIn("Array.isArray(r.via)", self.html)
+
+    def test_via_relationship_type_preferred(self):
+        """Source prefers via.relationship_type over via.type."""
+        self.assertIn("via.relationship_type", self.html)
+
+    def test_via_type_fallback(self):
+        """Source falls back to via.type for non-array objects."""
+        self.assertIn("|| _via.type", self.html)
+
+    def test_via_missing_falls_back_to_label(self):
+        """Source falls back to 'via' string when via is missing/empty."""
+        self.assertIn('|| "via"', self.html)
+
+    def test_no_object_object_string(self):
+        """Old r.via.type || r.via pattern that produces [object Object] is gone."""
+        self.assertNotIn("r.via.type || r.via", self.html)
+
+    def test_via_text_content_uses_via_label(self):
+        """textContent for via badge uses the computed _viaLabel variable."""
+        self.assertIn("_viaLabel", self.html)
+
+
+# ---------------------------------------------------------------------------
+# Provenance rendering regression (dict vs array)
+# ---------------------------------------------------------------------------
+
+class WebAppProvenanceFixTests(unittest.TestCase):
+    """Provenance rendering correctly handles dict, array, and null results.
+
+    Contract v1 provenance returns a single dict (object), not an array.
+    The Web App must normalise this before calling .forEach().
+    """
+
+    def setUp(self):
+        self.html = _read_webapp()
+
+    def test_provenance_normalizes_result_to_array(self):
+        """Source contains Array.isArray guard before provenance forEach."""
+        self.assertIn("Array.isArray(items)", self.html)
+
+    def test_provenance_no_bare_result_or_empty(self):
+        """Original broken pattern (bare || []) is removed."""
+        idx = self.html.index("state.provenanceData.result")
+        line_start = self.html.rfind("\n", 0, idx) + 1
+        line_end = self.html.index("\n", idx)
+        line = self.html[line_start:line_end].strip()
+        self.assertNotEqual(line, "var items = state.provenanceData.result || [];")
+
+    def test_provenance_dict_wrapped_as_single_item(self):
+        """Dict result is wrapped in an array for forEach."""
+        idx = self.html.index("Array.isArray(items)")
+        surrounding = self.html[idx:idx+120]
+        self.assertIn("[items]", surrounding)
+
+    def test_provenance_null_falls_back_to_empty(self):
+        """Null/missing result falls back to empty array."""
+        idx = self.html.index("Array.isArray(items)")
+        surrounding = self.html[max(0, idx-40):idx+120]
+        self.assertIn(": []", surrounding)
+
+    def test_provenance_forEach_still_used(self):
+        """forEach card rendering is preserved (not rewritten)."""
+        self.assertIn("items.forEach(function(p)", self.html)
+
+
+# ---------------------------------------------------------------------------
+# API integration tests (against real production DB)
+# ---------------------------------------------------------------------------
+
+
 if __name__ == "__main__":
     unittest.main()

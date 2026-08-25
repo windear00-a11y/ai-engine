@@ -19,7 +19,10 @@ Design notes
 * Structured JSON request logging to stderr -- one line per completed request.
 * A transport-level ``GET /health`` returns live metrics (uptime, request
   count, initialization count, load time).
-* No CORS headers by default.
+* Minimal CORS support: ``OPTIONS`` preflight returns 200 with appropriate
+  headers; all JSON responses carry ``Access-Control-Allow-Origin: *`` so
+  browser clients (e.g. the static Web App) can read responses cross-origin.
+  API-key authentication is enforced on ``POST`` regardless of origin.
 """
 
 import hmac
@@ -301,10 +304,17 @@ class V1Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError):
             pass
 
+    def _send_cors_headers(self):
+        """Add CORS headers to the current response."""
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
     def _send_bytes(self, status, body):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self._send_cors_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -449,8 +459,13 @@ class V1Handler(BaseHTTPRequestHandler):
         self._send_json(
             405, _single_env("invalid_request", "method not allowed"))
 
+    def do_OPTIONS(self):
+        """Handle CORS preflight: return 200 with required headers, no body."""
+        self.send_response(200)
+        self._send_cors_headers()
+        self.end_headers()
+
     do_PUT = _reject_method
     do_DELETE = _reject_method
     do_PATCH = _reject_method
-    do_OPTIONS = _reject_method
     do_HEAD = _reject_method
