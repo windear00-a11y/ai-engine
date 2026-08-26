@@ -2,28 +2,14 @@ import json
 import os
 
 from .repository import KnowledgeRepository, DEFAULT_KNOWLEDGE_DB
+from .vocabulary import (
+    ALL_RECOMMENDED_NODE_TYPES,
+    ALL_RECOMMENDED_RELATIONSHIP_KINDS,
+)
 
-VALID_TYPES = {
-    "concept",
-    "technology",
-    "entity",
-    "procedure",
-    "rule",
-    "example",
-    "dependency",
-}
+VALID_TYPES = ALL_RECOMMENDED_NODE_TYPES
 
-RELATIONSHIP_KINDS = {
-    "depends_on",
-    "related_to",
-    "part_of",
-    "instance_of",
-    "implements",
-    "extends",
-    "uses",
-    "example_of",
-    "references",
-}
+RELATIONSHIP_KINDS = ALL_RECOMMENDED_RELATIONSHIP_KINDS
 
 
 class KnowledgeStore:

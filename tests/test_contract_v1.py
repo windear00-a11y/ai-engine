@@ -59,6 +59,8 @@ DOCUMENTED_ERROR_CODES = (
 DOCUMENTED_NODE_TYPES = (
     "concept", "technology", "entity", "procedure",
     "rule", "example", "dependency",
+    "person", "company", "product", "document",
+    "event", "research_paper", "location", "discipline",
 )
 
 

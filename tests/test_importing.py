@@ -176,7 +176,7 @@ class VerifierTests(unittest.TestCase):
 
     def test_invalid_node_type(self):
         plan = valid_plan()
-        plan["preview"]["proposed_nodes"][0]["type"] = "not_a_type"
+        plan["preview"]["proposed_nodes"][0]["type"] = ""
         result = verify_plan(plan)
         self.assertFalse(result.valid)
         self.assertIn("node_type", [e.code for e in result.errors])
@@ -483,7 +483,7 @@ class ImportingCLITests(unittest.TestCase):
 
     def test_verify_invalid_plan_returns_nonzero(self):
         with tempfile.TemporaryDirectory() as tmp:
-            plan = build_plan([node("a", "bad_type")], [])
+            plan = build_plan([node("a", "")], [])
             path = write_plan(tmp, plan)
             r = self._run("verify", path)
             self.assertEqual(r.returncode, 1)

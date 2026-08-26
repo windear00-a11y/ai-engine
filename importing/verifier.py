@@ -23,6 +23,11 @@ import os
 from dataclasses import dataclass, field
 
 from retrieval.knowledge import VALID_TYPES, RELATIONSHIP_KINDS
+from retrieval.vocabulary import (
+    is_valid_node_type,
+    is_recommended_node_type,
+    is_recommended_relationship_kind,
+)
 
 
 @dataclass
@@ -86,7 +91,7 @@ def _is_unsafe_path(value):
     return False
 
 
-def _check_node(node, index, errors, seen_ids):
+def _check_node(node, index, errors, warnings, seen_ids):
     path = f"preview.proposed_nodes[{index}]"
     if not isinstance(node, dict):
         errors.append(_issue("malformed_node", "node must be an object", path))
@@ -107,10 +112,15 @@ def _check_node(node, index, errors, seen_ids):
             seen_ids[nid] = index
 
     ntype = node.get("type")
-    if ntype not in VALID_TYPES:
+    if not is_valid_node_type(ntype):
         errors.append(_issue("node_type",
-                             f"invalid node type {ntype!r}; expected one of "
-                             f"{sorted(VALID_TYPES)}", f"{path}.type"))
+                             f"node type must be a non-empty string, got {ntype!r}",
+                             f"{path}.type"))
+    elif not is_recommended_node_type(ntype):
+        warnings.append(_issue("node_type",
+                               f"node type {ntype!r} is not in the recommended "
+                               f"vocabulary ({sorted(VALID_TYPES)})",
+                               f"{path}.type"))
 
     name = node.get("name")
     if not isinstance(name, str) or not name:
@@ -204,10 +214,10 @@ def _check_relationship(rel, index, errors, warnings, node_ids,
                              "relationship 'label' must be a string when provided",
                              f"{path}.label"))
 
-    if isinstance(rtype, str) and rtype and rtype not in RELATIONSHIP_KINDS:
+    if isinstance(rtype, str) and rtype and not is_recommended_relationship_kind(rtype):
         warnings.append(_issue("relationship_kind",
                                f"relationship type {rtype!r} is not in the "
-                               f"canonical set {sorted(RELATIONSHIP_KINDS)}",
+                               f"recommended vocabulary {sorted(RELATIONSHIP_KINDS)}",
                                f"{path}.relationship_type"))
 
     if isinstance(src, str) and src and src not in node_ids:
@@ -290,7 +300,7 @@ def verify_plan(plan):
 
     seen_ids = {}
     for i, node in enumerate(nodes):
-        _check_node(node, i, errors, seen_ids)
+        _check_node(node, i, errors, warnings, seen_ids)
     node_ids = set(seen_ids)
 
     seen_rel = set()

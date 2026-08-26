@@ -32,7 +32,12 @@ No network, no AI, no fuzzy matching -- validation is fully deterministic.
 
 from dataclasses import dataclass, field
 
-from ingestion.source_format import VALID_TYPES, SOURCE_FORMAT_VERSION
+from ingestion.source_format import SOURCE_FORMAT_VERSION
+from retrieval.vocabulary import (
+    is_valid_node_type,
+    is_empty_node_type,
+    is_recommended_node_type,
+)
 
 
 @dataclass
@@ -156,14 +161,18 @@ def validate_source(data):
             else:
                 seen_ids[nid] = i
 
-        # type (case-insensitive against the canonical set)
+        # type (free-form string — any non-empty value is accepted)
         ntype = node.get("type")
-        ntype_norm = ntype.lower() if isinstance(ntype, str) else ntype
-        if ntype_norm not in VALID_TYPES:
+        ntype_norm = ntype.strip().lower() if isinstance(ntype, str) else ntype
+        if is_empty_node_type(ntype):
             errors.append(ValidationError(
                 "node_type",
-                f"invalid node type {ntype!r}; "
-                f"expected one of {sorted(VALID_TYPES)}",
+                "node 'type' is required and must be a non-empty string",
+                f"{npath}.type"))
+        elif not is_valid_node_type(ntype_norm):
+            errors.append(ValidationError(
+                "node_type",
+                f"node type must be a non-empty string, got {ntype!r}",
                 f"{npath}.type"))
 
         # name / description

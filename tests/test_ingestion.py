@@ -95,7 +95,13 @@ class ValidatorInvalidSourceTests(unittest.TestCase):
         self.assertTrue(any(e.code == "duplicate_id" for e in res.errors))
 
     def test_invalid_node_type(self):
-        data = sf.build_source("s", [sf.build_node("a", "bogus", "A", "d")])
+        data = sf.build_source("s", [sf.build_node("a", "", "A", "d")])
+        res = validate_source(data)
+        self.assertFalse(res.valid)
+        self.assertTrue(any(e.code == "node_type" for e in res.errors))
+
+    def test_empty_node_type(self):
+        data = sf.build_source("s", [sf.build_node("a", None, "A", "d")])
         res = validate_source(data)
         self.assertFalse(res.valid)
         self.assertTrue(any(e.code == "node_type" for e in res.errors))
@@ -269,7 +275,7 @@ class CLITests(unittest.TestCase):
     def test_cli_validate_invalid(self):
         d = tempfile.mkdtemp()
         path = write_json(d, "bad.json", sf.build_source(
-            "s", [sf.build_node("a", "bogus", "A", "d")]))
+            "s", [sf.build_node("a", "", "A", "d")]))
         r = self._run("validate", path)
         self.assertEqual(r.returncode, 1)
         out = json.loads(r.stdout)
