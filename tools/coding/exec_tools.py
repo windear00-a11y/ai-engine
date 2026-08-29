@@ -36,14 +36,40 @@ from .fs import Workspace, PathError
 # --------------------------------------------------------------------------
 
 class ExecutionRunner:
-    """Run only explicitly allowlisted commands with validated arguments."""
+    """Run only explicitly allowlisted commands with validated arguments.
 
-    def __init__(self, root, allowlist=None, default_timeout=30):
+    Two operation modes (backward compatible):
+
+    * **Legacy** (default when no ``policy``/``permissions`` provided): uses a
+      simple allowlist dict (``args: "any"`` or a fixed arg set). This mode
+      preserves the original behaviour relied on by older tests that operate
+      without a permission object.
+
+    * **Hardened** (when a :class:`tools.permissions.policy.Policy` and/or an
+      :class:`tools.permissions.approvalgate.ApprovalGate` are supplied):
+      routes through :func:`tools.permissions.execution.run_checked`, which
+      imposes closed safe argument forms (Python ``-c``/``-i``/``-x`` denied),
+      stdout/stderr output caps, process-group termination on timeout, and
+      environment filtering. Every launch requires explicit approval.
+    """
+
+    def __init__(self, root, allowlist=None, default_timeout=30,
+                 policy=None, permissions=None, approver=None,
+                 strip_patterns=None):
         self.ws = Workspace(root)
         self.allowlist = allowlist if allowlist is not None else self._default_allowlist()
         self.default_timeout = default_timeout
+        self.policy = policy
+        self.permissions = permissions
+        self.approver = approver
+        self.strip_patterns = strip_patterns
+        self._hardened = policy is not None or permissions is not None
         # Keep Python bytecode out of the workspace during verification.
         self._pycache = tempfile.mkdtemp(prefix="kb_pycache_")
+
+    @property
+    def hardened(self):
+        return self._hardened
 
     @staticmethod
     def _default_allowlist():
@@ -55,6 +81,83 @@ class ExecutionRunner:
 
     def is_allowed(self, name):
         return name in self.allowlist
+
+    def _run_hardened(self, name, args, cwd, timeout):
+        """Run through the hardened execution policy (run_checked).
+
+        Enforces workspace cwd confinement, closed safe argument forms,
+        output caps, process-group kill on timeout, env filtering, and
+        explicit approval for the EXECUTE domain.
+        """
+        # Resolve/validate cwd within the workspace before launching.
+        if cwd is None:
+            cwd_abs = self.ws.root
+        else:
+            try:
+                cwd_abs = self.ws.resolve(cwd)
+            except PathError as e:
+                return self._err(name, args, None, cwd,
+                                 f"cwd path denied: {e}")
+        if not os.path.isdir(cwd_abs):
+            return self._err(name, args, None, cwd,
+                             f"cwd is not a directory: {cwd!r}")
+
+        from tools.permissions.policy import Policy
+        from tools.permissions.execution import run_checked
+
+        policy = self.policy
+        if policy is None:
+            # A safety layer exists but no explicit policy: use safe defaults.
+            policy = Policy()
+
+        # Determine the policy command key and the real executable.
+        spec = self.allowlist.get(name)
+        policy_key = name
+        executable = None
+        if spec is not None:
+            exec_name = spec.get("executable")
+            if exec_name:
+                base = os.path.basename(str(exec_name))
+                if base in ("python", "python3"):
+                    policy_key = base
+                    executable = str(exec_name)
+                else:
+                    policy_key = base
+
+        approval_of = self._make_approver()
+
+        timeout_ms = None
+        if timeout is not None:
+            timeout_ms = int(timeout * 1000)
+
+        result = run_checked(
+            policy, policy_key, args, approval_of,
+            cwd=cwd_abs, timeout_ms=timeout_ms,
+            environ=os.environ, strip_patterns=self.strip_patterns,
+            executable=executable,
+        )
+        # Restore reporting fields consistent with the legacy layer.
+        result["cwd"] = self.ws.rel(cwd_abs)
+        if executable is not None:
+            result["executable"] = policy_key
+            result["command"] = " ".join(
+                [executable] + [str(a) for a in args])
+        return result
+
+    def _make_approver(self):
+        """Build an approval callable for the EXECUTE domain.
+
+        Precedence: an explicit approver > the ApprovalGate > deny-all.
+        """
+        if self.approver is not None:
+            return self.approver
+        if self.permissions is not None:
+            def _gate_approve(proposal):
+                allowed, _d, _e = self.permissions.authorize_execute(
+                    proposal.get("command"), args=proposal.get("args"))
+                return allowed
+            return _gate_approve
+        return lambda proposal: False  # fail closed: deny all
 
     @staticmethod
     def _err(name, args, executable, cwd, message):
@@ -75,6 +178,11 @@ class ExecutionRunner:
     def run(self, name, args=None, cwd=None, timeout=None):
         args = list(args) if args else []
 
+        # ---- hardened mode ----------------------------------------------
+        if self._hardened:
+            return self._run_hardened(name, args, cwd, timeout)
+
+        # ---- legacy mode -------------------------------------------------
         spec = self.allowlist.get(name)
         if spec is None:
             return self._err(name, args, None, cwd,

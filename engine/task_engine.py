@@ -48,10 +48,27 @@ class TaskEngine:
     }
 
     def __init__(self, knowledge_dir=None, workspace_root=None,
-                 max_steps=DEFAULT_MAX_STEPS, max_duration=DEFAULT_MAX_DURATION):
+                 max_steps=DEFAULT_MAX_STEPS, max_duration=DEFAULT_MAX_DURATION,
+                 permissions=None, policy=None, approver=None):
+        # Fail-safe default: the production coding-tool path must never be
+        # reachable ungated. If the caller omits the optional permission
+        # object, construct a real gate that denies every non-read operation
+        # unless an explicit approver is supplied (no auto-approval). A caller
+        # who forgets to wire an approver gets denials, never a bypass.
+        workspace_root = workspace_root or DEFAULT_WORKSPACE
+        if permissions is None:
+            from tools.permissions import Policy, PathPolicy, ApprovalGate
+            if policy is None:
+                policy = Policy()
+            permissions = ApprovalGate(
+                path_policy=PathPolicy(workspace_root, policy=policy),
+                approver=approver)
         self.knowledge = KnowledgeTools(
             knowledge_dir=knowledge_dir or DEFAULT_KNOWLEDGE_DIR)
-        self.coding = CodingTools(workspace_root or DEFAULT_WORKSPACE)
+        self.coding = CodingTools(
+            workspace_root,
+            permissions=permissions, policy=policy, approver=approver)
+        self.permissions = permissions
         self.default_max_steps = max_steps
         self.default_max_duration = max_duration
         self._current_task_id = None

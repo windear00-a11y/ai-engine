@@ -14,12 +14,55 @@ with a structured ``"error"`` field on failure rather than raising.
 import difflib
 import os
 
-from .fs import Workspace, PathError, is_binary
+try:
+    from .fs import Workspace, PathError, is_binary
+except Exception:  # pragma: no cover - defensive
+    from tools.coding.fs import Workspace, PathError, is_binary
 
 
 class WriteTools:
-    def __init__(self, root):
+    def __init__(self, root, permissions=None):
         self.ws = Workspace(root)
+        self.permissions = permissions
+
+    # -- permission helper -------------------------------------------------
+    def _hard_guard(self, abs_path):
+        """Hard invariant: never write the frozen production knowledge DB.
+
+        In addition to any configured gate, this is enforced unconditionally
+        so database/knowledge.db (and its backup) can never be written no
+        matter what policy is in force.
+        """
+        try:
+            from tools.permissions.pathpolicy import hard_write_guard
+            return hard_write_guard(abs_path, self.ws.root)
+        except Exception:
+            return False
+
+    def _authorize(self, path, abs_path, operation, content=None,
+                   multi_file=False):
+        """Return (allowed, error). If a permission gate is configured,
+        evaluate the write there; otherwise rely on the hard guard."""
+        if self._hard_guard(abs_path):
+            return (False,
+                    "write denied: frozen production database is immutable")
+        if self.permissions is not None:
+            snapshot_provider = None
+            try:
+                # For destructive writes capture the current on-disk bytes
+                # as the before-snapshot.
+                if os.path.isfile(abs_path):
+                    def _snap(_p=abs_path):
+                        with open(_p, "rb") as _f:
+                            return _f.read()
+                    snapshot_provider = _snap
+            except Exception:
+                snapshot_provider = None
+            allowed, _decision, err = self.permissions.authorize_write(
+                path, operation, content=content,
+                snapshot_provider=snapshot_provider, multi_file=multi_file)
+            return (allowed, err)
+        return (True, None)
 
     def write(self, path, content, overwrite=True):
         if not isinstance(path, str) or not path:
@@ -43,6 +86,12 @@ class WriteTools:
             return {"path": path,
                     "error": "file already exists; pass overwrite=True to replace",
                     "bytes_written": 0, "created_or_updated": None}
+
+        allowed, err = self._authorize(path, abs_path, "file.write",
+                                       content=content)
+        if not allowed:
+            return {"path": path, "error": err, "bytes_written": 0,
+                    "created_or_updated": None}
 
         parent = os.path.dirname(abs_path)
         if parent and not os.path.isdir(parent):
@@ -88,6 +137,12 @@ class WriteTools:
         if is_binary(abs_path):
             return {"path": path, "error": "binary file cannot be edited",
                     "replacements": 0, "previous_size": None, "new_size": None}
+
+        allowed, err = self._authorize(path, abs_path, "file.edit",
+                                       content=new_text)
+        if not allowed:
+            return {"path": path, "error": err, "replacements": 0,
+                    "previous_size": None, "new_size": None}
 
         try:
             with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
@@ -142,6 +197,10 @@ class WriteTools:
         if os.path.exists(abs_path) and not os.path.isdir(abs_path):
             return {"path": path,
                     "error": "path exists and is not a directory", "created": None}
+
+        allowed, err = self._authorize(path, abs_path, "file.mkdir")
+        if not allowed:
+            return {"path": path, "error": err, "created": None}
 
         existed = os.path.isdir(abs_path)
         os.makedirs(abs_path, exist_ok=True)

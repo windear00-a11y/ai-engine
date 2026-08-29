@@ -458,13 +458,16 @@ class CodeTools:
 # --------------------------------------------------------------------------
 
 class CodingTools:
-    def __init__(self, root):
+    def __init__(self, root, permissions=None, policy=None, approver=None):
         self.root = root
+        self.permissions = permissions
         self.file = FileTools(root)
         self.project = ProjectTools(root)
         self.code = CodeTools(root)
-        self.write = WriteTools(root)
-        self.exec = ExecutionRunner(root)
+        self.write = WriteTools(root, permissions=permissions)
+        self.exec = ExecutionRunner(root, policy=policy,
+                                    permissions=permissions,
+                                    approver=approver)
         self.verify = ProjectVerificationTools(root, runner=self.exec)
 
     def file_list(self, path=".", depth=1, include_dirs=True,

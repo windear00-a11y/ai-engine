@@ -57,3 +57,4 @@ output/
 # re-included below. Any other *.db is still ignored.
 *.db
 !database/knowledge.db
+database/knowledge.db.backup
