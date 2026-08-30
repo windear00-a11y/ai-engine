@@ -31,6 +31,12 @@ def classify_write(operation, multi_file=False, exists=False):
     if operation == "file.edit":
         if multi_file:
             return (WriteTier.T3_MULTI, True, True)
+        # Editing requires a before-image ONLY when the target already exists
+        # (you cannot meaningfully edit a missing file). This preserves the
+        # fail-closed stance (approval always required) while making reversible
+        # single-file edits rollbackable.
+        if exists:
+            return (WriteTier.T1_REVERSIBLE, True, True)
         return (WriteTier.T1_REVERSIBLE, True, False)
     if operation in ("file.write",):
         if multi_file:

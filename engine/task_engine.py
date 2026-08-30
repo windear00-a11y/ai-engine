@@ -45,6 +45,7 @@ class TaskEngine:
     MUTATING = {
         "file.write", "file.edit", "file.mkdir",
         "project.build", "project.test",
+        "rollback.operation", "rollback.confirm",
     }
 
     def __init__(self, knowledge_dir=None, workspace_root=None,
@@ -60,6 +61,11 @@ class TaskEngine:
             from tools.permissions import Policy, PathPolicy, ApprovalGate
             if policy is None:
                 policy = Policy()
+            # Fail-closed gate with NO persistent state: it denies every
+            # non-read operation by default, so no journal is ever produced
+            # and no rollback is ever required. Callers that want journaled
+            # writes + rollback supply an ApprovalGate bound to an EngineState
+            # (the production coordinator does this).
             permissions = ApprovalGate(
                 path_policy=PathPolicy(workspace_root, policy=policy),
                 approver=approver)
@@ -93,7 +99,100 @@ class TaskEngine:
             "project.check": c.project_check,
             "project.build": c.project_build,
             "project.test": c.project_test,
+            "rollback.operation": self._rollback_operation,
+            "rollback.confirm": self._rollback_confirm,
         }
+
+    # -- rollback tools ----------------------------------------------------
+
+    def _rollback_executor(self):
+        from tools.permissions.rollback import RollbackExecutor
+        pp = getattr(self.permissions, "path_policy", None)
+        state = getattr(self.permissions, "state", None)
+        if pp is None or state is None:
+            return None
+        return RollbackExecutor(pp, state)
+
+    def _rollback_operation(self, operation_id):
+        """Auto-rollback of a completed write operation (decision 7/8/9).
+
+        Succeeds without extra approval only when every file still matches the
+        post-write checksum. Any external modification produces a
+        ``rollback_conflict`` instead of silently overwriting.
+        """
+        if not isinstance(operation_id, str) or not operation_id:
+            return {"result": "invalid", "operation_id": operation_id,
+                    "error": "operation_id must be a non-empty string"}
+        ex = self._rollback_executor()
+        if ex is None:
+            return {"result": "error", "operation_id": operation_id,
+                    "error": "rollback requires a persistent state store"}
+        plan = ex.plan(operation_id)
+        if plan["not_found"]:
+            return {"result": "not_found", "operation_id": operation_id,
+                    "error": "unknown operation"}
+        if plan["not_owned"]:
+            return {"result": "denied", "operation_id": operation_id,
+                    "error": plan["summary"]}
+        blocked = [r for r in plan["rows"] if r["action"] == "blocked"]
+        if blocked:
+            return {"result": "denied", "operation_id": operation_id,
+                    "error": f"rollback targets are not writable: "
+                             f"{blocked[0]['target_rel']}",
+                    "blocked": [b["target_rel"] for b in blocked]}
+        if not plan["safe"]:
+            return {"result": "rollback_conflict",
+                    "operation_id": operation_id,
+                    "error": "files modified after the write; use "
+                             "rollback.confirm to override",
+                    "conflicts": plan["conflicts"]}
+        allowed, _d, err = self.permissions.authorize_rollback(
+            operation_id, ex.resolve_fn, confirm=False)
+        if not allowed:
+            return {"result": "denied", "operation_id": operation_id,
+                    "error": err}
+        res = ex.execute(operation_id, confirm=False)
+        return {"result": res["result"], "operation_id": operation_id,
+                "restored": res.get("restored"), "deleted": res.get("deleted"),
+                "conflicts": res.get("conflicts"),
+                "notes": res.get("notes"), "error": res.get("error")}
+
+    def _rollback_confirm(self, operation_id):
+        """Explicitly confirmed rollback that may override TOCTOU conflicts.
+
+        Still goes through the approval gate and can never restore paths in the
+        blocked/read-only zones.
+        """
+        if not isinstance(operation_id, str) or not operation_id:
+            return {"result": "invalid", "operation_id": operation_id,
+                    "error": "operation_id must be a non-empty string"}
+        ex = self._rollback_executor()
+        if ex is None:
+            return {"result": "error", "operation_id": operation_id,
+                    "error": "rollback requires a persistent state store"}
+        plan = ex.plan(operation_id)
+        if plan["not_found"]:
+            return {"result": "not_found", "operation_id": operation_id,
+                    "error": "unknown operation"}
+        if plan["not_owned"]:
+            return {"result": "denied", "operation_id": operation_id,
+                    "error": plan["summary"]}
+        blocked = [r for r in plan["rows"] if r["action"] == "blocked"]
+        if blocked:
+            return {"result": "denied", "operation_id": operation_id,
+                    "error": f"rollback targets are not writable: "
+                             f"{blocked[0]['target_rel']}",
+                    "blocked": [b["target_rel"] for b in blocked]}
+        allowed, _d, err = self.permissions.authorize_rollback(
+            operation_id, ex.resolve_fn, confirm=True)
+        if not allowed:
+            return {"result": "denied", "operation_id": operation_id,
+                    "error": err}
+        res = ex.execute(operation_id, confirm=True)
+        return {"result": res["result"], "operation_id": operation_id,
+                "restored": res.get("restored"), "deleted": res.get("deleted"),
+                "conflicts": res.get("conflicts"),
+                "notes": res.get("notes"), "error": res.get("error")}
 
     # -- validation -------------------------------------------------------
 

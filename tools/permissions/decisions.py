@@ -21,6 +21,7 @@ class Domain(Enum):
     READ = "read"
     WRITE = "write"
     EXECUTE = "execute"
+    ROLLBACK = "rollback"
     GIT = "git"
     NETWORK = "network"
     PUBLISH = "publish"          # publish/deploy
@@ -40,6 +41,7 @@ REASON_NOT_ALLOWED = "not_allowed"
 REASON_NETWORK_DENIED = "network_denied"
 REASON_GIT_DENIED = "git_denied"
 REASON_PUBLISH_DENIED = "publish_denied"
+REASON_ROLLBACK_CONFLICT = "rollback_conflict"
 
 
 class Decision:

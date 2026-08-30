@@ -29,6 +29,7 @@ from tools.permissions.decisions import (
     REASON_BLOCKED, REASON_READONLY, REASON_NO_APPROVAL,
     REASON_NO_SNAPSHOT, REASON_OUTSIDE_WORKSPACE,
     REASON_NETWORK_DENIED, REASON_PUBLISH_DENIED, REASON_GIT_DENIED,
+    REASON_NOT_ALLOWED, REASON_ROLLBACK_CONFLICT,
 )
 from tools.permissions.operations import WriteTier, classify_write
 from tools.permissions.journal import deterministic_id
@@ -78,6 +79,7 @@ class ApprovalGate:
         self.state = state
         self.approver = approver if approver is not None else _default_approver
         self._last_operation_id = None
+        self._last_write = None
 
     # -- write path resolution ---------------------------------------------
 
@@ -95,7 +97,7 @@ class ApprovalGate:
     # -- core check --------------------------------------------------------
 
     def check(self, domain, target, operation=None, content=None,
-              multi_file=False, snapshot_provider=None):
+              multi_file=False, snapshot_provider=None, group_id=None):
         """Return a Decision (allow/deny/require_approval) for a proposal.
 
         This is a PURE evaluation: it returns a Decision and may record an
@@ -134,10 +136,18 @@ class ApprovalGate:
 
         if domain == Domain.WRITE:
             return self._check_write(target, operation, content, multi_file,
-                                     snapshot_provider)
+                                     snapshot_provider, group_id)
 
         if domain == Domain.EXECUTE:
             return self._check_execute(target)
+
+        if domain == Domain.ROLLBACK:
+            # Rollback is authorized only through authorize_rollback (all
+            # files are scoped and path-checked there); a bare check fails
+            # closed as not_allowed.
+            d = deny(REASON_NOT_ALLOWED)
+            self._audit(Domain.ROLLBACK, target, "rollback", d, "proposed")
+            return d
 
         d = deny(REASON_NOT_ALLOWED)
         self._audit(domain, target, domain.value, d, "proposed")
@@ -146,7 +156,7 @@ class ApprovalGate:
     # -- write -------------------------------------------------------------
 
     def _check_write(self, path, operation, content, multi_file,
-                     snapshot_provider):
+                     snapshot_provider, group_id=None):
         target = path
         resolved = self._resolve_write(path)
         if resolved["error"]:
@@ -165,10 +175,6 @@ class ApprovalGate:
             self._audit(Domain.WRITE, target, operation, d, "proposed")
             return d
 
-        tier, needs_approval, needs_snapshot = classify_write(
-            operation or "file.write", multi_file=multi_file,
-            exists=os.path.isfile(abs_path))
-
         # Hard invariant: never write the production knowledge DB.
         from tools.permissions.pathpolicy import hard_write_guard
         if hard_write_guard(abs_path, self.path_policy.root):
@@ -176,11 +182,26 @@ class ApprovalGate:
             self._audit(Domain.WRITE, target, operation, d, "proposed")
             return d
 
-        # If a snapshot is required but cannot be produced, fail closed BEFORE
-        # approval is even requested. This enforces "no snapshot, no write".
+        exists = os.path.isfile(abs_path)
+        tier, needs_approval, needs_snapshot = classify_write(
+            operation or "file.write", multi_file=multi_file, exists=exists)
+
+        # Deterministic operation id is computed BEFORE any snapshot so that
+        # rollback references use the real id (ordering fix, Phase 1B). An
+        # explicit group_id (opt-in) shares one id across multiple steps so a
+        # multi-file operation can be rolled back atomically.
+        op_id = group_id or self._propose_id(domain=Domain.WRITE,
+                                             target=target,
+                                             operation=operation,
+                                             content=content)
+
+        # If a before-image is required but cannot be produced, fail closed
+        # BEFORE approval is even requested ("no snapshot, no write").
+        # New files (including new files inside T3 batches) never fail here:
+        # they carry a new-file marker instead of a before-image.
         snapshot_ref = None
-        if needs_snapshot:
-            snapshot_ref = self._capture_snapshot(abs_path, tier,
+        if exists and needs_snapshot:
+            snapshot_ref = self._capture_snapshot(abs_path, tier, op_id,
                                                   snapshot_provider)
             if not snapshot_ref:
                 d = deny(REASON_NO_SNAPSHOT)
@@ -194,8 +215,6 @@ class ApprovalGate:
             return d
 
         # Explicit approval required.
-        op_id = self._propose_id(domain=Domain.WRITE, target=target,
-                                 operation=operation, content=content)
         proposal = {
             "domain": "write", "target": target, "operation": operation,
             "tier": tier, "multi_file": multi_file, "operation_id": op_id,
@@ -208,9 +227,17 @@ class ApprovalGate:
             approved = False
 
         if approved:
+            if self.state is not None:
+                self.state.ensure_operation(op_id, domain="write",
+                                            status="approved")
+                self._record_write_marker(op_id, abs_path, tier, exists)
             d = require_approval(REASON_NO_APPROVAL, approval_id=op_id,
                                  required_scope=proposal)
             self._last_operation_id = op_id
+            self._last_write = {
+                "operation_id": op_id, "target": target, "tier": tier,
+                "target_rel": self._to_rel(abs_path), "new_file": not exists,
+            }
             self._audit(Domain.WRITE, target, operation, d, "approved",
                         checksum_ref=snapshot_ref, approval_id=op_id)
             return d
@@ -275,6 +302,151 @@ class ApprovalGate:
             return (False, d, f"execute denied: {d.reason_code}")
         return (True, d, None)
 
+    def authorize_write_detailed(self, path, operation, content=None,
+                                 snapshot_provider=None, multi_file=False,
+                                 group_id=None):
+        """Integration helper that returns the resolved write identity.
+
+        Returns ``(allowed, decision, error, info)``. ``info`` is a dict with
+        keys ``operation_id``, ``target``, ``target_rel``, ``tier``,
+        ``new_file``. When ``allowed`` is True the caller may write and then
+        MUST call ``record_after`` (post-write checksum) and ``verify_after``.
+        """
+        d = self.check(Domain.WRITE, path, operation=operation,
+                       content=content, multi_file=multi_file,
+                       snapshot_provider=snapshot_provider, group_id=group_id)
+        if d.kind == DecisionKind.DENY:
+            return (False, d,
+                    f"write denied: {d.reason_code}"
+                    + (f" ({d.required_scope})" if d.required_scope else ""),
+                    None)
+        info = dict(self._last_write or {})
+        info.setdefault("operation_id", d.approval_id)
+        info.setdefault("target", path)
+        return (True, d, None, info)
+
+    def record_after(self, operation_id, target_rel, after_checksum):
+        """Record the post-write checksum for the operation's journal row.
+
+        MUST be called by the write layer after the bytes hit disk and the
+        checksum was computed from those exact bytes.
+        """
+        if self.state is None:
+            return {"ok": False, "error": "no state store"}
+        return self.state.update_journal_after(operation_id, target_rel,
+                                               after_checksum)
+
+    def verify_after(self, operation_id, target_rel, after_checksum=None):
+        """Verify the on-disk file still matches the post-write checksum.
+
+        Returns ``True`` when verification passes, False otherwise. Used by
+        the write layer to advance the operation to completed / failed.
+        """
+        if self.state is None:
+            return True
+        rows = self.state.list_for_operation(operation_id)
+        row = next((r for r in rows if r["target_rel"] == target_rel), None)
+        if row is None:
+            return False
+        checksum = after_checksum or row.get("after_checksum")
+        if not checksum:
+            return False
+        from tools.permissions.journal import checksum_bytes
+        try:
+            current = checksum_bytes(
+                self._read_target(target_rel))
+        except Exception:
+            return False
+        return current == checksum
+
+    def _read_target(self, target_rel):
+        if self.path_policy is None:
+            raise ValueError("no path policy")
+        abs_path = self.path_policy.resolve(target_rel)
+        with open(abs_path, "rb") as f:
+            return f.read()
+
+    def complete_operation(self, operation_id):
+        if self.state is None:
+            return {"ok": False, "error": "no state store"}
+        return self.state.set_operation_status(operation_id, "completed")
+
+    def fail_operation(self, operation_id):
+        if self.state is None:
+            return {"ok": False, "error": "no state store"}
+        return self.state.set_operation_status(operation_id,
+                                               "verification_failed")
+
+    def authorize_rollback(self, operation_id, resolve_fn, confirm=False):
+        """Authorize a rollback of a prior write operation.
+
+        ``resolve_fn(rel) -> (abs_path, mode)`` reuses the workspace/path
+        safety layer to scope every file being restored. Paths that are
+        blocked or read-only are denied unconditionally (a rollback can never
+        bypass the protected/readonly zones).
+
+        Returns (allowed, decision, error).
+        """
+        if self.state is None:
+            return (False, deny(REASON_BLOCKED), "rollback requires state")
+        op = self.state.get_operation(operation_id)
+        if op is None:
+            return (False, deny(REASON_ROLLBACK_CONFLICT),
+                    f"unknown operation {operation_id}")
+        if op["domain"] != "write":
+            return (False, deny(REASON_ROLLBACK_CONFLICT),
+                    "operation is not a workspace write")
+
+        rows = self.state.list_for_operation(operation_id)
+        if not rows:
+            return (False, deny(REASON_ROLLBACK_CONFLICT),
+                    "operation has no snapshots to restore")
+
+        abs_paths = []
+        for r in rows:
+            try:
+                abs_path, mode = resolve_fn(r["target_rel"])
+            except Exception:
+                return (False, deny(REASON_OUTSIDE_WORKSPACE),
+                        "path outside workspace")
+            if mode == "deny":
+                return (False, deny(REASON_BLOCKED),
+                        f"path blocked: {r['target_rel']}")
+            if mode == "read_only":
+                return (False, deny(REASON_READONLY),
+                        f"path read-only: {r['target_rel']}")
+            abs_paths.append(abs_path)
+
+        op_id = self._propose_id(domain=Domain.ROLLBACK,
+                                 target=operation_id, operation="rollback",
+                                 content=None)
+        proposal = {
+            "domain": "rollback", "operation_id": operation_id,
+            "targets": [r["target_rel"] for r in rows],
+            "confirm": bool(confirm),
+        }
+        if not confirm:
+            # Auto-rollback (decision 7): allowed only when the executor has
+            # already verified every file still matches its after_checksum.
+            approved = True
+        else:
+            approved = False
+            try:
+                approved = bool(self.approver(dict(proposal)))
+            except Exception:
+                approved = False
+        if approved:
+            d = require_approval(REASON_NO_APPROVAL, approval_id=op_id,
+                                 required_scope=proposal)
+            self._last_operation_id = op_id
+            self._audit(Domain.ROLLBACK, operation_id, "rollback", d,
+                        "approved", approval_id=op_id)
+            return (True, d, None)
+        d = deny(REASON_NO_APPROVAL)
+        self._audit(Domain.ROLLBACK, operation_id, "rollback", d, "denied",
+                    approval_id=op_id)
+        return (False, d, f"rollback denied ({d.reason_code})")
+
     def _propose_id(self, domain, target, operation, content):
         csum = ""
         if isinstance(content, bytes):
@@ -286,7 +458,7 @@ class ApprovalGate:
         return deterministic_id("op", domain.value, str(target),
                                 str(operation), csum)
 
-    def _capture_snapshot(self, abs_path, tier, snapshot_provider):
+    def _capture_snapshot(self, abs_path, tier, op_id, snapshot_provider):
         """Capture pre-write bytes and store a journal record.
 
         Returns a checksum reference string (for the audit) or None on
@@ -307,25 +479,45 @@ class ApprovalGate:
             except Exception:
                 return None
 
-        import os as _os
-        rel = _os.path.relpath(abs_path, self.path_policy.root) \
-            if self.path_policy else abs_path
+        rel = self._to_rel(abs_path)
         try:
             data = None
             if snapshot_provider is not None:
                 data = snapshot_provider(abs_path)
-            if data is None and _os.path.isfile(abs_path):
+            if data is None and os.path.isfile(abs_path):
                 with open(abs_path, "rb") as f:
                     data = f.read()
             if data is None:
                 return None
-            rec = self.state.add_journal(self._last_operation_id or "op",
-                                         rel, tier, data)
+            rec = self.state.add_journal(op_id or "op", rel, tier, data)
             if rec.get("ok"):
                 return rec.get("checksum")
             return None
         except Exception:
             return None
+
+    def _record_write_marker(self, op_id, abs_path, tier, exists):
+        """Record a new-file marker so rollback removes only what this
+        operation created. Skipped when a before-image already exists."""
+        if self.state is None:
+            return
+        if exists:
+            return
+        rel = self._to_rel(abs_path)
+        try:
+            self.state.add_journal(op_id, rel, tier, None,
+                                   status="new_file")
+        except Exception:
+            pass
+
+    def _to_rel(self, abs_path):
+        import os as _os
+        if self.path_policy is None:
+            return abs_path
+        try:
+            return _os.path.relpath(abs_path, self.path_policy.root)
+        except ValueError:
+            return abs_path
 
     def _audit(self, domain, target, permission, decision, status,
                checksum_ref=None, approval_id=None):

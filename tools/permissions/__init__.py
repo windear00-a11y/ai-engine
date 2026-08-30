@@ -26,6 +26,7 @@ from tools.permissions.approvalgate import (
 )
 from tools.permissions.journal import EngineState, deterministic_id, \
     checksum_bytes
+from tools.permissions.rollback import RollbackExecutor
 from tools.permissions.audit import AuditLog
 from tools.permissions.execution import (
     run_checked, check_args, filter_env, CommandDenied,
@@ -38,6 +39,7 @@ __all__ = [
     "Decision", "DecisionKind", "Domain", "allow", "deny", "require_approval",
     "ApprovalGate", "ApprovalStatus", "OpStatus",
     "EngineState", "deterministic_id", "checksum_bytes",
+    "RollbackExecutor",
     "AuditLog",
     "run_checked", "check_args", "filter_env", "CommandDenied",
 ]

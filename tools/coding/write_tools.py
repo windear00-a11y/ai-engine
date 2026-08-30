@@ -40,12 +40,17 @@ class WriteTools:
             return False
 
     def _authorize(self, path, abs_path, operation, content=None,
-                   multi_file=False):
-        """Return (allowed, error). If a permission gate is configured,
-        evaluate the write there; otherwise rely on the hard guard."""
+                   multi_file=False, group_id=None):
+        """Return (allowed, error, info).
+
+        If a permission gate is configured, evaluate the write there;
+        otherwise rely on the hard guard. ``info`` carries the resolved write
+        identity (operation_id, target_rel, new_file, tier) needed to record
+        the post-write checksum for rollback."""
         if self._hard_guard(abs_path):
             return (False,
-                    "write denied: frozen production database is immutable")
+                    "write denied: frozen production database is immutable",
+                    None)
         if self.permissions is not None:
             snapshot_provider = None
             try:
@@ -58,13 +63,41 @@ class WriteTools:
                     snapshot_provider = _snap
             except Exception:
                 snapshot_provider = None
-            allowed, _decision, err = self.permissions.authorize_write(
-                path, operation, content=content,
-                snapshot_provider=snapshot_provider, multi_file=multi_file)
-            return (allowed, err)
-        return (True, None)
+            allowed, _decision, err, info = \
+                self.permissions.authorize_write_detailed(
+                    path, operation, content=content,
+                    snapshot_provider=snapshot_provider, multi_file=multi_file,
+                    group_id=group_id)
+            return (allowed, err, info)
+        return (True, None, None)
 
-    def write(self, path, content, overwrite=True):
+    def _after_write(self, info, abs_path, after_checksum=None,
+                     is_dir=False):
+        """Record the post-write checksum, verify it on disk, and advance the
+        operation state machine (Phase 1B). Deterministic; never raises."""
+        if self.permissions is None or not info:
+            return True
+        try:
+            op_id = info.get("operation_id")
+            target_rel = info.get("target_rel")
+            if after_checksum is not None:
+                self.permissions.record_after(op_id, target_rel,
+                                              after_checksum)
+            if is_dir:
+                ok = os.path.isdir(abs_path)
+            else:
+                from tools.permissions.journal import checksum_bytes
+                with open(abs_path, "rb") as f:
+                    ok = checksum_bytes(f.read()) == after_checksum
+            if ok:
+                self.permissions.complete_operation(op_id)
+            else:
+                self.permissions.fail_operation(op_id)
+            return ok
+        except Exception:
+            return False
+
+    def write(self, path, content, overwrite=True, group_id=None):
         if not isinstance(path, str) or not path:
             return {"path": path, "error": "path must be a non-empty string",
                     "bytes_written": 0, "created_or_updated": None}
@@ -87,8 +120,9 @@ class WriteTools:
                     "error": "file already exists; pass overwrite=True to replace",
                     "bytes_written": 0, "created_or_updated": None}
 
-        allowed, err = self._authorize(path, abs_path, "file.write",
-                                       content=content)
+        allowed, err, info = self._authorize(path, abs_path, "file.write",
+                                             content=content,
+                                             group_id=group_id)
         if not allowed:
             return {"path": path, "error": err, "bytes_written": 0,
                     "created_or_updated": None}
@@ -102,15 +136,19 @@ class WriteTools:
         with open(abs_path, "wb") as f:
             f.write(data)
 
+        from tools.permissions.journal import checksum_bytes
+        self._after_write(info, abs_path, after_checksum=checksum_bytes(data))
+
         return {
             "path": path,
             "root": self.ws.root,
             "bytes_written": len(data),
             "created_or_updated": "updated" if existed else "created",
+            "operation_id": (info or {}).get("operation_id"),
             "error": None,
         }
 
-    def edit(self, path, old_text, new_text, replace_all=False):
+    def edit(self, path, old_text, new_text, replace_all=False, group_id=None):
         if not isinstance(path, str) or not path:
             return {"path": path, "error": "path must be a non-empty string",
                     "replacements": 0, "previous_size": None, "new_size": None}
@@ -138,8 +176,9 @@ class WriteTools:
             return {"path": path, "error": "binary file cannot be edited",
                     "replacements": 0, "previous_size": None, "new_size": None}
 
-        allowed, err = self._authorize(path, abs_path, "file.edit",
-                                       content=new_text)
+        allowed, err, info = self._authorize(path, abs_path, "file.edit",
+                                             content=new_text,
+                                             group_id=group_id)
         if not allowed:
             return {"path": path, "error": err, "replacements": 0,
                     "previous_size": None, "new_size": None}
@@ -174,16 +213,22 @@ class WriteTools:
         with open(abs_path, "w", encoding="utf-8") as f:
             f.write(new_content)
 
+        from tools.permissions.journal import checksum_bytes
+        self._after_write(info, abs_path,
+                          after_checksum=checksum_bytes(
+                              new_content.encode("utf-8")))
+
         return {
             "path": path,
             "root": self.ws.root,
             "replacements": replacements,
             "previous_size": previous_size,
             "new_size": new_size,
+            "operation_id": (info or {}).get("operation_id"),
             "error": None,
         }
 
-    def mkdir(self, path, parents=True):
+    def mkdir(self, path, parents=True, group_id=None):
         if not isinstance(path, str) or not path:
             return {"path": path, "error": "path must be a non-empty string",
                     "created": None}
@@ -198,13 +243,16 @@ class WriteTools:
             return {"path": path,
                     "error": "path exists and is not a directory", "created": None}
 
-        allowed, err = self._authorize(path, abs_path, "file.mkdir")
+        allowed, err, info = self._authorize(path, abs_path, "file.mkdir",
+                                             group_id=group_id)
         if not allowed:
             return {"path": path, "error": err, "created": None}
 
         existed = os.path.isdir(abs_path)
         os.makedirs(abs_path, exist_ok=True)
+        self._after_write(info, abs_path, is_dir=True)
         return {"path": path, "root": self.ws.root, "created": not existed,
+                "operation_id": (info or {}).get("operation_id"),
                 "error": None}
 
     def diff(self, path, proposed_content):

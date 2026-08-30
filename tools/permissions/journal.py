@@ -43,10 +43,21 @@ CREATE TABLE IF NOT EXISTS journal (
     size_bytes INTEGER NOT NULL,
     content BLOB,
     status TEXT NOT NULL,
-    created_at_epoch REAL
+    created_at_epoch REAL,
+    after_checksum TEXT,
+    existed_before INTEGER NOT NULL DEFAULT 1,
+    snapshot_path TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_journal_operation
     ON journal(operation_id);
+
+CREATE TABLE IF NOT EXISTS operations (
+    operation_id TEXT PRIMARY KEY,
+    domain TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at_epoch REAL,
+    updated_at_epoch REAL
+);
 
 CREATE TABLE IF NOT EXISTS audit (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,10 +95,28 @@ def checksum_bytes(data):
 
 
 class EngineState:
-    """Thin transactional wrapper around the engine state DB."""
+    """Thin transactional wrapper around the engine state DB.
 
-    def __init__(self, db_path=None):
+    Snapshot storage is hybrid (Phase 1B): small before-images live in the
+    SQLite ``journal.content`` BLOB, large ones in a filesystem snapshot
+    directory referenced by ``journal.snapshot_path``. The cut-over threshold
+    is configurable (``hybrid_threshold`` bytes; default 1 MiB) and was chosen
+    from a measured comparison: below ~1 MiB the SQLite BLOB cost is flat and
+    simpler, above it the filesystem is consistently faster.
+    """
+
+    HYBRID_THRESHOLD_DEFAULT = 1048576  # 1 MiB
+
+    def __init__(self, db_path=None, snapshot_dir=None,
+                 hybrid_threshold=None):
         self.db_path = db_path or _default_state_db()
+        if snapshot_dir is None:
+            snapshot_dir = os.path.join(os.path.dirname(self.db_path),
+                                        "snapshots")
+        self.snapshot_dir = snapshot_dir
+        self.hybrid_threshold = (hybrid_threshold
+                                 if hybrid_threshold is not None
+                                 else self.HYBRID_THRESHOLD_DEFAULT)
         self._init_schema()
 
     def _connect(self):
@@ -104,41 +133,110 @@ class EngineState:
         conn = self._connect()
         try:
             conn.executescript(_SCHEMA)
+            # Lightweight idempotent migration for pre-existing state DBs that
+            # predate Phase 1B (add Phase 1B columns if absent).
+            self._migrate_journal_columns(conn)
             conn.commit()
         finally:
             conn.close()
+
+    @staticmethod
+    def _migrate_journal_columns(conn):
+        cols = {row["name"] for row in conn.execute(
+            "PRAGMA table_info(journal)")}
+        additions = {
+            "after_checksum": "after_checksum TEXT",
+            "existed_before": "existed_before INTEGER NOT NULL DEFAULT 1",
+            "snapshot_path": "snapshot_path TEXT",
+        }
+        for name, ddl in additions.items():
+            if name not in cols:
+                conn.execute(f"ALTER TABLE journal ADD COLUMN {ddl}")
 
     # -- journal -----------------------------------------------------------
 
     def add_journal(self, operation_id, target_rel, tier, content,
-                    status="snapshot_stored"):
+                    status="snapshot_stored", after_checksum=None,
+                    existed_before=None, snapshot_path=None):
         """Persist a before-image snapshot for an approved write.
 
+        ``content`` may be None to represent a new file (existed_before=0).
         Returns the journal record dict, or a structured error dict when
         content cannot be snapshotted (fail-closed; caller must not write).
         """
-        try:
-            data = content if isinstance(content, bytes) else content.encode(
-                "utf-8")
-        except (AttributeError, UnicodeEncodeError):
-            return {"ok": False, "error": "snapshot content not serializable"}
+        if existed_before is None:
+            existed_before = 1 if content is not None else 0
+        if content is None:
+            data = b""
+            is_null = True
+        else:
+            try:
+                data = content if isinstance(content, bytes) else content.encode(
+                    "utf-8")
+            except (AttributeError, UnicodeEncodeError):
+                return {"ok": False, "error": "snapshot content not serializable"}
+            is_null = False
         size = len(data)
-        digest = checksum_bytes(data)
+        digest = "" if is_null else checksum_bytes(data)
+
+        # Hybrid storage decision: keep small before-images in the BLOB; spill
+        # large ones to the snapshot directory. The snapshot file is written
+        # BEFORE the DB insert so a failure cannot leave a row without data;
+        # an insert failure removes the orphan file (best effort).
+        blob = None
+        snapshot_path = None
+        if not is_null and size >= self.hybrid_threshold:
+            try:
+                os.makedirs(self.snapshot_dir, exist_ok=True)
+                name = ("snap_%s_%s_%s.bin"
+                        % (operation_id, digest[:12],
+                           os.urandom(4).hex()))
+                abs_snap = os.path.join(self.snapshot_dir, name)
+                with open(abs_snap, "wb") as f:
+                    f.write(data)
+                snapshot_path = name
+            except Exception:
+                return {"ok": False,
+                        "error": "snapshot spill to filesystem failed"}
+        elif not is_null:
+            blob = sqlite3.Binary(data)
+
         conn = self._connect()
         try:
             cur = conn.execute(
                 "INSERT INTO journal (operation_id, target_rel, tier, "
-                "checksum, size_bytes, content, status, created_at_epoch) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "checksum, size_bytes, content, status, created_at_epoch, "
+                "after_checksum, existed_before, snapshot_path) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (operation_id, target_rel, tier, digest, size,
-                 sqlite3.Binary(data), status, time.time()))
+                 blob, status, time.time(), after_checksum, int(existed_before),
+                 snapshot_path))
             conn.commit()
             seq = cur.lastrowid
             return {"ok": True, "seq": seq, "operation_id": operation_id,
                     "target_rel": target_rel, "tier": tier,
-                    "checksum": digest, "size_bytes": size, "status": status}
+                    "checksum": digest, "size_bytes": size, "status": status,
+                    "existed_before": int(existed_before)}
+        except Exception:
+            if snapshot_path and not is_null:
+                try:
+                    os.remove(os.path.join(self.snapshot_dir, snapshot_path))
+                except Exception:
+                    pass
+            raise
         finally:
             conn.close()
+
+    def snapshot_bytes(self, row):
+        """Read a snapshot back from BLOB or filesystem (hybrid storage)."""
+        content = row.get("content")
+        if content is not None:
+            return bytes(content)
+        snap_rel = row.get("snapshot_path")
+        if snap_rel:
+            with open(os.path.join(self.snapshot_dir, snap_rel), "rb") as f:
+                return f.read()
+        return b""
 
     def journal_latest_for(self, target_rel):
         """Return the most recent journal record for a target (rollback ref)."""
@@ -148,6 +246,93 @@ class EngineState:
                 "SELECT * FROM journal WHERE target_rel = ? "
                 "ORDER BY seq DESC LIMIT 1", (target_rel,)).fetchone()
             return dict(row) if row is not None else None
+        finally:
+            conn.close()
+
+    def list_for_operation(self, operation_id):
+        """All journal rows for an operation group (multi-file rollback)."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM journal WHERE operation_id = ? "
+                "ORDER BY seq ASC", (operation_id,)).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def update_journal_after(self, operation_id, target_rel, after_checksum):
+        """Record the post-write checksum for a snapshot row."""
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "UPDATE journal SET after_checksum = ?, status = 'executing' "
+                "WHERE operation_id = ? AND target_rel = ?",
+                (after_checksum, operation_id, target_rel))
+            conn.commit()
+            return {"ok": cur.rowcount > 0}
+        finally:
+            conn.close()
+
+    def set_journal_status(self, seq, status):
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "UPDATE journal SET status = ? WHERE seq = ?",
+                (status, seq))
+            conn.commit()
+            return {"ok": cur.rowcount > 0}
+        finally:
+            conn.close()
+
+    def set_journal_checksum(self, seq, checksum, size_bytes):
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE journal SET checksum = ?, size_bytes = ? WHERE seq = ?",
+                (checksum, size_bytes, seq))
+            conn.commit()
+            return {"ok": True}
+        finally:
+            conn.close()
+
+    # -- operations (rollback state machine) -------------------------------
+
+    def ensure_operation(self, operation_id, domain, status="prepared"):
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT status FROM operations WHERE operation_id = ?",
+                (operation_id,)).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO operations (operation_id, domain, status, "
+                    "created_at_epoch, updated_at_epoch) VALUES (?, ?, ?, ?, ?)",
+                    (operation_id, domain, status, time.time(), time.time()))
+                conn.commit()
+                return {"ok": True, "created": True, "status": status}
+            return {"ok": True, "created": False, "status": row["status"]}
+        finally:
+            conn.close()
+
+    def get_operation(self, operation_id):
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM operations WHERE operation_id = ?",
+                (operation_id,)).fetchone()
+            return dict(row) if row is not None else None
+        finally:
+            conn.close()
+
+    def set_operation_status(self, operation_id, status):
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE operations SET status = ?, updated_at_epoch = ? "
+                "WHERE operation_id = ?",
+                (status, time.time(), operation_id))
+            conn.commit()
+            return {"ok": True, "operation_id": operation_id, "status": status}
         finally:
             conn.close()
 
