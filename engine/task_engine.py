@@ -101,7 +101,22 @@ class TaskEngine:
             "project.test": c.project_test,
             "rollback.operation": self._rollback_operation,
             "rollback.confirm": self._rollback_confirm,
+            "planner.generate": self._planner_generate,
         }
+
+    def _planner_generate(self, intent=None, target=None, error=None,
+                          constraints=None, workspace_root=None, db_path=None):
+        """Non-mutating planner invocation (Component C).
+
+        Produces a TaskEngine-compatible task via the deterministic rule/template
+        planner. Does not write, execute, or approve anything.
+        """
+        ws = workspace_root or getattr(self.coding, "root", None) or DEFAULT_WORKSPACE
+        db = db_path or os.path.join(os.path.realpath(ws), ".ai-engine", "project_index.db")
+        from tools.planner.deterministic import DeterministicPlanner
+        planner = DeterministicPlanner(ws, db_path=db)
+        return planner.generate(intent=intent, target=target, error=error,
+                                constraints=constraints)
 
     # -- rollback tools ----------------------------------------------------
 
