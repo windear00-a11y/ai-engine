@@ -12,6 +12,7 @@ build rolls back cleanly. Connections are short-lived and always closed.
 
 import os
 import sqlite3
+from contextlib import contextmanager
 
 from .types import (
     FileRecord, SymbolRecord, EdgeRecord,
@@ -105,6 +106,28 @@ class ProjectIndexStore:
         conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
+    @contextmanager
+    def transaction(self):
+        """One shared SQLite connection/transaction for a whole update batch.
+
+        All writes inside the ``with`` block run on a single connection and
+        commit together on success or roll back together on any exception, so a
+        reader never observes a partially-applied incremental update. Write
+        methods accept ``conn=`` to join this transaction (and skip their own
+        commit/close); without ``conn`` they open a short-lived connection as
+        before (used by the full build path).
+        """
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN")
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def _init_schema(self):
         conn = self._connect()
         try:
@@ -127,16 +150,21 @@ class ProjectIndexStore:
         finally:
             conn.close()
 
-    def set_meta(self, key, value):
-        conn = self._connect()
+    def set_meta(self, key, value, conn=None):
+        own = conn is None
+        conn = conn or self._connect()
         try:
-            with conn:
-                conn.execute(
-                    "INSERT INTO meta (key, value) VALUES (?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    (key, value))
+            if own:
+                conn.execute("BEGIN")
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value))
+            if own:
+                conn.commit()
         finally:
-            conn.close()
+            if own:
+                conn.close()
 
     def get_meta(self, key):
         conn = self._connect()
@@ -149,30 +177,142 @@ class ProjectIndexStore:
 
     # -- writes -----------------------------------------------------------
 
-    def clear_files(self, project, rel_paths):
+    def clear_files(self, project, rel_paths, conn=None):
         """Remove all rows (and their symbols/edges) for a set of files."""
         if not rel_paths:
             return
-        conn = self._connect()
+        own = conn is None
+        conn = conn or self._connect()
         try:
+            if own:
+                conn.execute("BEGIN")
             intent = ",".join("?" for _ in rel_paths)
-            with conn:
-                rel_place = "|".join("?" for _ in rel_paths)
-                conn.execute(
-                    "DELETE FROM edges WHERE project = ? AND "
-                    "source_id IN (SELECT id FROM files WHERE project = ? "
-                    "AND rel_path IN (%s))" % intent,
-                    [project, project] + list(rel_paths))
-                conn.execute(
-                    "DELETE FROM symbols WHERE project = ? AND "
-                    "rel_path IN (%s)" % intent,
-                    [project] + list(rel_paths))
-                conn.execute(
-                    "DELETE FROM files WHERE project = ? AND "
-                    "rel_path IN (%s)" % intent,
-                    [project] + list(rel_paths))
+            conn.execute(
+                "DELETE FROM edges WHERE project = ? AND "
+                "source_id IN (SELECT id FROM files WHERE project = ? "
+                "AND rel_path IN (%s))" % intent,
+                [project, project] + list(rel_paths))
+            conn.execute(
+                "DELETE FROM symbols WHERE project = ? AND "
+                "rel_path IN (%s)" % intent,
+                [project] + list(rel_paths))
+            conn.execute(
+                "DELETE FROM files WHERE project = ? AND "
+                "rel_path IN (%s)" % intent,
+                [project] + list(rel_paths))
+            if own:
+                conn.commit()
         finally:
-            conn.close()
+            if own:
+                conn.close()
+
+    def clear_file_index(self, project, rel_paths, conn=None):
+        """Remove a file's symbols plus every edge sourced from those symbols
+        (contains/defines/imports/inherits) or from the file row itself (tests).
+
+        Used when a file is re-indexed (content change) or removed. Incoming
+        edges (other files importing INTO this module, or test files targeting
+        this file) are intentionally preserved here; call
+        :meth:`clear_incoming_to_files` to drop those for a removed file.
+        """
+        rel_paths = list(rel_paths)
+        if not rel_paths:
+            return
+        own = conn is None
+        conn = conn or self._connect()
+        try:
+            if own:
+                conn.execute("BEGIN")
+            intent = ",".join("?" for _ in rel_paths)
+            # symbol-sourced edges (contains/defines/imports/inherits) + tests
+            # (source_id = file id)
+            conn.execute(
+                "DELETE FROM edges WHERE project = ? AND source_id IN ("
+                "  SELECT id FROM symbols WHERE project = ? AND rel_path IN (%s)"
+                "  UNION SELECT id FROM files WHERE project = ? AND rel_path IN (%s)"
+                ")" % (intent, intent),
+                [project, project] + list(rel_paths)
+                + [project] + list(rel_paths))
+            conn.execute(
+                "DELETE FROM symbols WHERE project = ? AND "
+                "rel_path IN (%s)" % intent,
+                [project] + list(rel_paths))
+            if own:
+                conn.commit()
+        finally:
+            if own:
+                conn.close()
+
+    def remove_files(self, project, rel_paths, conn=None):
+        """Remove the file rows for a set of paths (symbols/edges must already
+        be cleaned)."""
+        rel_paths = list(rel_paths)
+        if not rel_paths:
+            return
+        own = conn is None
+        conn = conn or self._connect()
+        try:
+            if own:
+                conn.execute("BEGIN")
+            intent = ",".join("?" for _ in rel_paths)
+            conn.execute(
+                "DELETE FROM files WHERE project = ? AND "
+                "rel_path IN (%s)" % intent,
+                [project] + list(rel_paths))
+            if own:
+                conn.commit()
+        finally:
+            if own:
+                conn.close()
+
+    def clear_incoming_to_files(self, project, file_ids, conn=None):
+        """Delete edges whose target is any of the given file ids. Used to drop
+        stale resolved-import FACTs and tests edges pointing at a removed file."""
+        file_ids = list(file_ids)
+        if not file_ids:
+            return
+        own = conn is None
+        conn = conn or self._connect()
+        try:
+            if own:
+                conn.execute("BEGIN")
+            intent = ",".join("?" for _ in file_ids)
+            conn.execute(
+                "DELETE FROM edges WHERE project = ? AND "
+                "target_id IN (%s)" % intent,
+                [project] + list(file_ids))
+            if own:
+                conn.commit()
+        finally:
+            if own:
+                conn.close()
+
+    def clear_resolved_edges(self, project, rel_path, conn=None,
+                             kinds=("imports", "tests")):
+        """Delete a file's import edges (source = module symbol id) and/or
+        tests edges (source = file id) so they can be re-resolved against the
+        current module map. Content-derived structural edges are left
+        untouched."""
+        from .types import file_id, symbol_id, module_qname_for
+        own = conn is None
+        conn = conn or self._connect()
+        try:
+            if own:
+                conn.execute("BEGIN")
+            qname = module_qname_for(rel_path)
+            sources = [symbol_id(project, rel_path, "module", qname),
+                       file_id(project, rel_path)]
+            intent = ",".join("?" for _ in sources)
+            ks = ",".join("?" for _ in kinds)
+            conn.execute(
+                "DELETE FROM edges WHERE project = ? AND rel_type IN (%s) "
+                "AND source_id IN (%s)" % (ks, intent),
+                [project] + list(kinds) + list(sources))
+            if own:
+                conn.commit()
+        finally:
+            if own:
+                conn.close()
 
     def remove_files_absent(self, project, present_set):
         """Delete index rows for files present in the DB but absent on disk."""
@@ -189,63 +329,108 @@ class ProjectIndexStore:
             self.clear_files(project, stale)
         return stale
 
-    def put_files(self, project, records, indexed_seq):
-        conn = self._connect()
+    def put_files(self, project, records, indexed_seq, conn=None):
+        own = conn is None
+        conn = conn or self._connect()
         try:
-            with conn:
-                for r in records:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO files "
-                        "(id, project, rel_path, language, size_bytes, sha256, "
-                        "mtime_ns, parse_status, parse_error, is_test, "
-                        "config_type, detail, indexed_seq) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (r.id, project, r.rel_path, r.language, r.size_bytes,
-                         r.sha256, r.mtime_ns, r.parse_status, r.parse_error,
-                         int(r.is_test), r.config_type, r.detail, indexed_seq))
+            if own:
+                conn.execute("BEGIN")
+            for r in records:
+                conn.execute(
+                    "INSERT OR REPLACE INTO files "
+                    "(id, project, rel_path, language, size_bytes, sha256, "
+                    "mtime_ns, parse_status, parse_error, is_test, "
+                    "config_type, detail, indexed_seq) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (r.id, project, r.rel_path, r.language, r.size_bytes,
+                     r.sha256, r.mtime_ns, r.parse_status, r.parse_error,
+                     int(r.is_test), r.config_type, r.detail, indexed_seq))
+            if own:
+                conn.commit()
         finally:
-            conn.close()
+            if own:
+                conn.close()
 
-    def put_symbols(self, project, records):
-        conn = self._connect()
+    def put_symbols(self, project, records, conn=None):
+        own = conn is None
+        conn = conn or self._connect()
         try:
-            with conn:
-                for s in records:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO symbols "
-                        "(id, project, rel_path, kind, name, qname, "
-                        "line_start, line_end, parent_id, signature, "
-                        "decorators, is_async, detail) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (s.id, project, s.rel_path, s.kind, s.name, s.qname,
-                         s.line_start, s.line_end, s.parent_id, s.signature,
-                         s.decorators, int(s.is_async), s.detail))
+            if own:
+                conn.execute("BEGIN")
+            for s in records:
+                conn.execute(
+                    "INSERT OR REPLACE INTO symbols "
+                    "(id, project, rel_path, kind, name, qname, "
+                    "line_start, line_end, parent_id, signature, "
+                    "decorators, is_async, detail) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (s.id, project, s.rel_path, s.kind, s.name, s.qname,
+                     s.line_start, s.line_end, s.parent_id, s.signature,
+                     s.decorators, int(s.is_async), s.detail))
+            if own:
+                conn.commit()
         finally:
-            conn.close()
+            if own:
+                conn.close()
 
-    def put_edges(self, project, records):
-        conn = self._connect()
+    def put_edges(self, project, records, conn=None):
+        own = conn is None
+        conn = conn or self._connect()
         try:
-            with conn:
-                for e in records:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO edges "
-                        "(id, project, source_id, rel_type, target_id, "
-                        "target_name, certainty, confidence, label) "
-                        "VALUES (?,?,?,?,?,?,?,?,?)",
-                        (e.id, project, e.source_id, e.rel_type, e.target_id,
-                         e.target_name, e.certainty, e.confidence, e.label))
+            if own:
+                conn.execute("BEGIN")
+            for e in records:
+                conn.execute(
+                    "INSERT OR REPLACE INTO edges "
+                    "(id, project, source_id, rel_type, target_id, "
+                    "target_name, certainty, confidence, label) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (e.id, project, e.source_id, e.rel_type, e.target_id,
+                     e.target_name, e.certainty, e.confidence, e.label))
+            if own:
+                conn.commit()
         finally:
-            conn.close()
+            if own:
+                conn.close()
 
     def delete_symbol_parents(self, project, rel_path):
         """Delete rows whose parent is a symbol re-indexed in this file
         (handles moved/nested symbols without a full wipe)."""
-        # Implemented as: clear symbols for the path is done via clear_files;
-        # this hook exists for incremental (B7) which is out of scope.
         return
 
     # -- reads (deterministic; sorted) ------------------------------------
+
+    def imports_all(self, project):
+        """All import edges for a project, sorted by id (deterministic)."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM edges WHERE project = ? AND rel_type = 'imports' "
+                "ORDER BY id", (project,)).fetchall()
+            return [_edge_from_row(r) for r in rows]
+        finally:
+            conn.close()
+
+    def tests_all(self, project):
+        """All tests edges for a project, sorted by id (deterministic)."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM edges WHERE project = ? AND rel_type = 'tests' "
+                "ORDER BY id", (project,)).fetchall()
+            return [_edge_from_row(r) for r in rows]
+        finally:
+            conn.close()
+
+    def rel_path_for_symbol(self, project, symbol_id_):
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT rel_path FROM symbols WHERE project = ? AND id = ?",
+                (project, symbol_id_)).fetchone()
+            return row["rel_path"] if row is not None else None
+        finally:
+            conn.close()
 
     def file(self, project, rel_path):
         conn = self._connect()

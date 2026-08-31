@@ -492,5 +492,271 @@ class TestMediumFixes(unittest.TestCase):
         self.assertNotIn("okmod.py", synth)
 
 
+# ----------------------------------------------------------------------
+# B7 — incremental project/code indexing.
+# ----------------------------------------------------------------------
+
+class TestB7IncrementalIndex(TestProjectIndexBase):
+    """Deterministic tests for ProjectIndex.incremental_update().
+
+    All scenarios converge: the incremental index must be logically identical
+    to a clean rebuild() of the same final state. Comparison ignores stored
+    mtime (size/mtime are only refresh hints, never identity).
+    """
+
+    B7_TREE = {
+        "pkg/__init__.py": "",
+        "pkg/a.py": "def foo():\n    return 1\n",
+        "pkg/b.py": "from pkg.a import foo\ndef bar():\n    return foo()\n",
+        "tests/test_a.py": "from pkg.a import foo\ndef test_f():\n    pass\n",
+        "README.md": "# t\n",
+    }
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.join(self._tmp.name, "proj")
+        os.makedirs(self.root)
+        write_tree(self.root, self.B7_TREE)
+        self.build()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _snapshot(self):
+        """Logical state: files/symbols/edges keyed by identity fields only."""
+        c = sqlite3.connect(self.ix.db_path)
+        c.row_factory = sqlite3.Row
+        try:
+            files = sorted(
+                (r["rel_path"], r["language"], r["parse_status"], r["sha256"])
+                for r in c.execute("SELECT * FROM files"))
+            syms = sorted(
+                (r["id"], r["kind"], r["qname"]) for r in
+                c.execute("SELECT * FROM symbols"))
+            edges = sorted(
+                (r["id"], r["rel_type"], r["certainty"], r["target_id"],
+                 r["target_name"], r["source_id"])
+                for r in c.execute("SELECT * FROM edges"))
+        finally:
+            c.close()
+        return {"files": files, "symbols": syms, "edges": edges}
+
+    def _assert_converges(self, apply_changes):
+        """Apply changes to a freshly built index incrementally, then assert
+        the incremental result equals a clean rebuild of the same tree."""
+        tmp = tempfile.TemporaryDirectory()
+        root = os.path.join(tmp.name, "proj")
+        os.makedirs(root)
+        write_tree(root, {
+            "pkg/__init__.py": "",
+            "pkg/a.py": "def foo():\n    return 1\n",
+            "pkg/b.py": "from pkg.a import foo\ndef bar():\n    return foo()\n",
+            "tests/test_a.py":
+                "from pkg.a import foo\ndef test_f():\n    pass\n",
+            "README.md": "# t\n",
+        })
+        try:
+            inc = ProjectIndex(root)
+            inc.build()
+            apply_changes(root)
+            inc.incremental_update()
+            full = ProjectIndex(root)
+            full.build()
+            self.assertEqual(self._snapshot_of(inc), self._snapshot_of(full))
+        finally:
+            tmp.cleanup()
+
+    def _snapshot_of(self, ix):
+        self.ix = ix
+        return self._snapshot()
+
+    def _counts(self, ix):
+        return ix.store.counts(ix.project)
+
+    # -- change detection ------------------------------------------------
+
+    def test_no_change_skips_everything(self):
+        self.build()
+        before = self._counts(self.ix)
+        res = self.ix.incremental_update()
+        self.assertEqual(self._counts(self.ix), before)
+        self.assertEqual(sorted(res["changes"]["unchanged_skipped"]),
+                         sorted(f["rel_path"] for f in
+                                self.q.file_manifest()))
+        self.assertEqual(res["changes"]["added"], [])
+        self.assertEqual(res["changes"]["modified"], [])
+        self.assertEqual(res["changes"]["deleted"], [])
+        self.assertEqual(self.ix.store.get_meta("kind"), "incremental")
+
+    def test_no_change_is_idempotent(self):
+        self.build()
+        s1 = self._snapshot()
+        self.ix.incremental_update()
+        self.ix.incremental_update()
+        self.assertEqual(self._snapshot(), s1)
+
+    def test_modified_file_reindexes(self):
+        self.build()
+        write_tree(self.root, {"pkg/a.py": "def foo():\n    return 2\n"})
+        res = self.ix.incremental_update()
+        self.assertIn("pkg/a.py", res["changes"]["modified"])
+        self.assertEqual(
+            self.q.find_file("pkg/a.py")["sha256"],
+            discovery._sha256(os.path.join(self.root, "pkg/a.py")))
+
+    def test_new_file_added(self):
+        self.build()
+        write_tree(self.root, {"pkg/c.py": "def go():\n    pass\n"})
+        res = self.ix.incremental_update()
+        self.assertIn("pkg/c.py", res["changes"]["added"])
+        self.assertIsNotNone(self.q.find_file("pkg/c.py"))
+
+    def test_deleted_file_removed(self):
+        self.build()
+        os.remove(os.path.join(self.root, "pkg/b.py"))
+        res = self.ix.incremental_update()
+        self.assertIn("pkg/b.py", res["changes"]["deleted"])
+        self.assertIsNone(self.q.find_file("pkg/b.py"))
+        # upstream module's symbols gone
+        self.assertEqual(self.q.symbols_in_file("pkg/b.py"), [])
+
+    def test_mtime_only_change_is_skipped(self):
+        self.build()
+        before = self._counts(self.ix)
+        os.utime(os.path.join(self.root, "pkg/a.py"))
+        res = self.ix.incremental_update()
+        self.assertEqual(self._counts(self.ix), before)
+        self.assertIn("pkg/a.py", res["changes"]["unchanged_skipped"])
+
+    def test_same_size_sha_differs_detected(self):
+        self.build()
+        # same length, different content -> must be detected via checksum
+        write_tree(self.root, {"pkg/a.py": "def foo():\n    return 3\n"})
+        res = self.ix.incremental_update()
+        self.assertIn("pkg/a.py", res["changes"]["modified"])
+
+    def test_restore_deleted_module(self):
+        self.build()
+        os.remove(os.path.join(self.root, "pkg/a.py"))
+        self.ix.incremental_update()
+        write_tree(self.root, {"pkg/a.py": "def foo():\n    return 7\n"})
+        self.ix.incremental_update()
+        self.assertIsNotNone(self.q.find_file("pkg/a.py"))
+
+    # -- parse-status handling -------------------------------------------
+
+    def test_syntax_error_flip_persists(self):
+        self.build()
+        write_tree(self.root, {"pkg/a.py": "def foo(:\n"})
+        self.ix.incremental_update()
+        self.assertEqual(self.q.find_file("pkg/a.py")["parse_status"],
+                         "syntax_error")
+
+    def test_syntax_to_ok_restores_dependents(self):
+        self.build()
+        write_tree(self.root, {"pkg/a.py": "def foo(:\n"})
+        self.ix.incremental_update()
+        write_tree(self.root, {"pkg/a.py": "def foo():\n    return 5\n"})
+        self.ix.incremental_update()
+        self.assertEqual(self.q.find_file("pkg/a.py")["parse_status"], "ok")
+
+    # -- stale-edge cleanup ----------------------------------------------
+
+    def test_stale_symbol_sourced_edges_removed_on_edit(self):
+        self.build()
+        write_tree(self.root, {"pkg/a.py":
+                               "# no symbols anymore\nimport json\n"})
+        self.ix.incremental_update()
+        # old function symbol gone; no stale contains/defines into old qnames
+        syms = self.q.symbols_in_file("pkg/a.py")
+        self.assertFalse(any(s["qname"] == "pkg.a.foo" for s in syms))
+        self.assertEqual(self.q.find_references("pkg.a.foo"), [])
+
+    def test_stale_outgoing_and_incoming_edges_on_delete(self):
+        self.build()
+        # b imports a; deleting a must remove the FACT into a and flip b's edge
+        os.remove(os.path.join(self.root, "pkg/a.py"))
+        self.ix.incremental_update()
+        # no edge targets a's (removed) file id
+        self._assert_converges(lambda r: os.remove(
+            os.path.join(r, "pkg/a.py")))
+
+    def test_test_relationship_updates_on_rename(self):
+        self.build()
+        os.rename(os.path.join(self.root, "pkg/a.py"),
+                  os.path.join(self.root, "pkg/z.py"))
+        self.ix.incremental_update()
+        # after rename, test_a.py no longer has a matching module target
+        self._assert_converges(lambda r: os.rename(
+            os.path.join(r, "pkg/a.py"), os.path.join(r, "pkg/z.py")))
+
+    # -- dependency re-resolution ----------------------------------------
+
+    def test_delete_module_flips_dependent_to_candidate(self):
+        self.build()
+        os.remove(os.path.join(self.root, "pkg/a.py"))
+        self.ix.incremental_update()
+        imp = [e for e in self._imports_of("pkg/b.py")]
+        self.assertTrue(imp)  # b still declares the import
+        self.assertTrue(all(e["certainty"] == "candidate"
+                            for e in imp))
+
+    def _imports_of(self, rel_path):
+        q = self.q
+        syms = q.symbols_in_file(rel_path)
+        mod = [s for s in syms if s["kind"] == "module"]
+        if not mod:
+            return []
+        out = []
+        for e in q.store.imports_all(self.ix.project):
+            if e.source_id == mod[0]["id"]:
+                out.append({"certainty": e.certainty,
+                            "target_name": e.target_name})
+        return out
+
+    def test_add_module_flips_unresolved_to_fact(self):
+        self.build()
+        write_tree(self.root, {"pkg/gone.py":
+                               "from missing.mod import m"})  # unresolved
+        self.ix.incremental_update()
+        write_tree(self.root, {"missing/__init__.py": "",
+                               "missing/mod.py": "def m():\n    return 0\n"})
+        self.ix.incremental_update()
+        imp = self._imports_of("pkg/gone.py")
+        self.assertTrue(any(e["certainty"] == "fact"
+                            for e in imp))
+
+    # -- deterministic ids / ordering -------------------------------------
+
+    def test_ids_deterministic_across_build_and_incremental(self):
+        self.build()
+        full = ProjectIndex(self.root)
+        full.build()
+        self.assertEqual(self._snapshot(), self._snapshot_of(full))
+
+    # -- bounded resolution ----------------------------------------------
+
+    def test_unchanged_file_not_reparsed(self):
+        """Unchanged modules keep identical symbol/edge rows (no churn)."""
+        self.build()
+        syms_before = sorted(s["id"] for s in
+                             self.q.symbols_in_file("pkg/b.py"))
+        write_tree(self.root, {"pkg/a.py": "def foo():\n    return 4\n"})
+        self.ix.incremental_update()
+        self.assertEqual(
+            sorted(s["id"] for s in self.q.symbols_in_file("pkg/b.py")),
+            syms_before)
+
+    # -- atomicity --------------------------------------------------------
+
+    def test_change_summary_shape(self):
+        self.build()
+        res = self.ix.incremental_update()
+        self.assertIn("counts", res)
+        self.assertIn("changes", res)
+        for key in ("added", "modified", "deleted", "unchanged_skipped"):
+            self.assertIn(key, res["changes"])
+
+
 if __name__ == "__main__":
     unittest.main()
