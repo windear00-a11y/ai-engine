@@ -26,6 +26,7 @@ from tools.permissions.policy import Policy
 DEFAULT_TIMEOUT_MS = 60000
 DEFAULT_STDOUT_LIMIT = 1048576
 DEFAULT_STDERR_LIMIT = 1048576
+DEFAULT_MEMORY_LIMIT_MB = 512
 
 # Allowed values of `-m` for python. This is the ONLY entry point.
 _SAFE_PY_MODULES = frozenset({"unittest", "compileall", "py_compile"})
@@ -201,6 +202,27 @@ def _decode(data, limit):
     return text
 
 
+def _is_android_termux():
+    """Detect Android/Termux where Scudo requires large virtual reservation.
+
+    Scudo on Android reserves ~8650752KB (~8.25 GiB) virtual at startup.
+    RLIMIT_AS 512 MiB would block that internal mmap and cause
+    'Scudo ERROR: internal map failure requesting 8650752KB' → SIGABRT
+    for every Python subprocess. On Android we must not use 512 MiB.
+    """
+    # Use ANDROID_ROOT / TERMUX_VERSION as primary indicators; avoid false
+    # positive from /data/data/com.termux created by the project for file
+    # downloads (exists on Linux containers after mkdir). Check for Termux
+    # specific binary or system property.
+    return (
+        "ANDROID_ROOT" in os.environ
+        or "ANDROID_DATA" in os.environ
+        or os.environ.get("TERMUX_VERSION") is not None
+        or (os.path.exists("/system/bin/app_process") and os.path.exists("/data/data/com.termux/files/usr/bin/termux-info"))
+        or os.environ.get("PREFIX", "").startswith("/data/data/com.termux/files/usr")
+    )
+
+
 def _terminate_group(proc):
     """Terminate the process group and wait for it to exit."""
     if proc.poll() is None:
@@ -223,6 +245,7 @@ def _terminate_group(proc):
 
 def run_checked(policy, name, args, approval_of, cwd=None,
                 timeout_ms=None, stdout_limit=None, stderr_limit=None,
+                memory_limit_mb=None,
                 environ=None, strip_patterns=None, executable=None):
     """Run a validated command under the hardened execution policy.
 
@@ -249,6 +272,15 @@ def run_checked(policy, name, args, approval_of, cwd=None,
                                             DEFAULT_STDOUT_LIMIT)
     stderr_limit = stderr_limit or spec.get("stderr_limit",
                                             DEFAULT_STDERR_LIMIT)
+    if memory_limit_mb is None:
+        memory_limit_mb = spec.get("memory_limit_mb", DEFAULT_MEMORY_LIMIT_MB)
+    # Validate memory limit before approval so invalid config fails closed.
+    if memory_limit_mb is not None:
+        if not isinstance(memory_limit_mb, int) or memory_limit_mb <= 0:
+            return {"command": " ".join([name] + args), "executable": name,
+                    "cwd": cwd, "exit_code": None, "stdout": "", "stderr": "",
+                    "duration": None, "timed_out": False, "success": False,
+                    "error": "memory limit must be a positive integer"}
 
     if timeout_ms <= 0:
         return {"command": " ".join([name] + args), "executable": name,
@@ -273,18 +305,60 @@ def run_checked(policy, name, args, approval_of, cwd=None,
         argv = [executable] + args
     else:
         argv = [name] + args
+    # Prepare deterministic memory limit via RLIMIT_AS, fail closed if unavailable.
+    # Android/Termux Scudo reserves ~8.25 GiB virtual at startup; 512 MiB
+    # RLIMIT_AS would cause 'Scudo ERROR: internal map failure requesting
+    # 8650752KB' and SIGABRT for every Python subprocess. Detect Android and
+    # use a limit that accommodates Scudo while still bounding huge allocations,
+    # or disable the limit and rely on timeout/output caps + LMK.
+    preexec_fn = None
+    if memory_limit_mb is not None:
+        # On Android, 512 MiB breaks Scudo. Use at least 12 GiB virtual or disable.
+        effective_limit_mb = memory_limit_mb
+        if _is_android_termux():
+            # Scudo needs 8650752KB = 8448 MiB; use 12288 MiB (12 GiB) to allow
+            # Scudo plus overhead while still limiting >12G allocations.
+            # If original limit already >=12288, keep it.
+            effective_limit_mb = max(memory_limit_mb, 12288)
+            # Alternative: disable entirely on Android by setting preexec_fn = None
+            # and relying on timeout/output caps. We keep 12G as a safe bound.
+            # If still too restrictive for future Scudo changes, fallback to no limit:
+            # effective_limit_mb = None  # uncomment to disable
+        if effective_limit_mb is not None:
+            try:
+                import resource  # noqa: F401
+            except ImportError:
+                return {"command": " ".join(argv), "executable": name, "cwd": cwd,
+                        "exit_code": None, "stdout": "", "stderr": "",
+                        "duration": None, "timed_out": False, "success": False,
+                        "error": "resource limits not supported on this platform"}
+            limit_bytes = effective_limit_mb * 1024 * 1024
+
+            def _preexec():
+                import resource
+                resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+
+            preexec_fn = _preexec
+
     start = time.perf_counter()
     try:
         proc = subprocess.Popen(
             argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             shell=False, env=env, start_new_session=True,
+            preexec_fn=preexec_fn,
         )
-    except (FileNotFoundError, PermissionError, OSError) as e:
+    except (FileNotFoundError, PermissionError, OSError, RuntimeError, ValueError) as e:
         duration = time.perf_counter() - start
+        # Distinguish resource failures for deterministic testing
+        msg = str(e)
+        if "resource" in msg.lower() or "memory" in msg.lower() or "limit" in msg.lower():
+            err = f"memory limit failed: {e}"
+        else:
+            err = f"failed to execute: {e}"
         return {"command": " ".join(argv), "executable": name, "cwd": cwd,
                 "exit_code": None, "stdout": "", "stderr": "",
                 "duration": round(duration, 4), "timed_out": False,
-                "success": False, "error": f"failed to execute: {e}"}
+                "success": False, "error": err}
 
     out_w = _OutputWatcher(proc.stdout, stdout_limit)
     err_w = _OutputWatcher(proc.stderr, stderr_limit)

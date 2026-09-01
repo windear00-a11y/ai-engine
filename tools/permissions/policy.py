@@ -78,6 +78,7 @@ def _default_policy_dict():
                 "timeout_ms": 60000,
                 "stdout_limit": 1048576,
                 "stderr_limit": 1048576,
+                "memory_limit_mb": 512,
             },
             "python3": {
                 "executable": "python3",
@@ -89,6 +90,7 @@ def _default_policy_dict():
                 "timeout_ms": 60000,
                 "stdout_limit": 1048576,
                 "stderr_limit": 1048576,
+                "memory_limit_mb": 512,
             },
             # Slice 4A — read-only linters/formatters, exact closed forms only.
             "flake8": {
@@ -100,6 +102,7 @@ def _default_policy_dict():
                 "timeout_ms": 60000,
                 "stdout_limit": 1048576,
                 "stderr_limit": 1048576,
+                "memory_limit_mb": 512,
             },
             "ruff": {
                 "executable": "ruff",
@@ -109,6 +112,7 @@ def _default_policy_dict():
                 "timeout_ms": 60000,
                 "stdout_limit": 1048576,
                 "stderr_limit": 1048576,
+                "memory_limit_mb": 512,
             },
             "black": {
                 "executable": "black",
@@ -118,6 +122,7 @@ def _default_policy_dict():
                 "timeout_ms": 60000,
                 "stdout_limit": 1048576,
                 "stderr_limit": 1048576,
+                "memory_limit_mb": 512,
             },
             "isort": {
                 "executable": "isort",
@@ -127,6 +132,7 @@ def _default_policy_dict():
                 "timeout_ms": 60000,
                 "stdout_limit": 1048576,
                 "stderr_limit": 1048576,
+                "memory_limit_mb": 512,
             },
             # Slice 4B — npm test/build, exact closed forms only (read-only invocation level).
             "npm": {
@@ -138,6 +144,7 @@ def _default_policy_dict():
                 "timeout_ms": 60000,
                 "stdout_limit": 1048576,
                 "stderr_limit": 1048576,
+                "memory_limit_mb": 512,
             },
             # Slice 4C — pip read-only inventory, exact closed forms only.
             "pip": {
@@ -150,6 +157,7 @@ def _default_policy_dict():
                 "timeout_ms": 60000,
                 "stdout_limit": 1048576,
                 "stderr_limit": 1048576,
+                "memory_limit_mb": 512,
             },
         },
         "approvals": {

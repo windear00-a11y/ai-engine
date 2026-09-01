@@ -140,9 +140,14 @@ class ExecutionRunner:
         if timeout is not None:
             timeout_ms = int(timeout * 1000)
 
+        # Pass deterministic memory limit from policy (default 512) through hardened path.
+        spec_for_mem = policy.command_spec(policy_key) or {}
+        memory_limit_mb = spec_for_mem.get("memory_limit_mb", 512)
+
         result = run_checked(
             policy, policy_key, args, approval_of,
             cwd=cwd_abs, timeout_ms=timeout_ms,
+            memory_limit_mb=memory_limit_mb,
             environ=os.environ, strip_patterns=self.strip_patterns,
             executable=executable,
         )
