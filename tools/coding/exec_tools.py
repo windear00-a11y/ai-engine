@@ -76,6 +76,7 @@ class ExecutionRunner:
         # Minimal safe default: only the active Python interpreter.
         # Slice 4A adds read-only linters/formatters with closed exact forms
         # (no args="any" for newly added commands).
+        # Slice 4B adds npm test/build with closed exact forms.
         return {
             "python": {"executable": sys.executable, "args": "any"},
             "python3": {"executable": sys.executable, "args": "any"},
@@ -83,6 +84,7 @@ class ExecutionRunner:
             "ruff": {"executable": "ruff", "args": ["check", "."]},
             "black": {"executable": "black", "args": ["--check", "."]},
             "isort": {"executable": "isort", "args": ["--check-only", "."]},
+            "npm": {"executable": "npm", "args": ["test", "run", "build"]},
         }
 
     def is_allowed(self, name):

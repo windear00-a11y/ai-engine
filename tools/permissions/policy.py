@@ -128,6 +128,17 @@ def _default_policy_dict():
                 "stdout_limit": 1048576,
                 "stderr_limit": 1048576,
             },
+            # Slice 4B — npm test/build, exact closed forms only (read-only invocation level).
+            "npm": {
+                "executable": "npm",
+                "forms": [
+                    {"args": ["test"], "approval": "required"},
+                    {"args": ["run", "build"], "approval": "required"},
+                ],
+                "timeout_ms": 60000,
+                "stdout_limit": 1048576,
+                "stderr_limit": 1048576,
+            },
         },
         "approvals": {
             # Whether a given (domain) defaults to requiring approval.
