@@ -90,6 +90,44 @@ def _default_policy_dict():
                 "stdout_limit": 1048576,
                 "stderr_limit": 1048576,
             },
+            # Slice 4A — read-only linters/formatters, exact closed forms only.
+            "flake8": {
+                "executable": "flake8",
+                "forms": [
+                    {"args": ["."], "approval": "required"},
+                    {"args": ["--count", "."], "approval": "required"},
+                ],
+                "timeout_ms": 60000,
+                "stdout_limit": 1048576,
+                "stderr_limit": 1048576,
+            },
+            "ruff": {
+                "executable": "ruff",
+                "forms": [
+                    {"args": ["check", "."], "approval": "required"},
+                ],
+                "timeout_ms": 60000,
+                "stdout_limit": 1048576,
+                "stderr_limit": 1048576,
+            },
+            "black": {
+                "executable": "black",
+                "forms": [
+                    {"args": ["--check", "."], "approval": "required"},
+                ],
+                "timeout_ms": 60000,
+                "stdout_limit": 1048576,
+                "stderr_limit": 1048576,
+            },
+            "isort": {
+                "executable": "isort",
+                "forms": [
+                    {"args": ["--check-only", "."], "approval": "required"},
+                ],
+                "timeout_ms": 60000,
+                "stdout_limit": 1048576,
+                "stderr_limit": 1048576,
+            },
         },
         "approvals": {
             # Whether a given (domain) defaults to requiring approval.

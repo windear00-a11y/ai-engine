@@ -74,9 +74,15 @@ class ExecutionRunner:
     @staticmethod
     def _default_allowlist():
         # Minimal safe default: only the active Python interpreter.
+        # Slice 4A adds read-only linters/formatters with closed exact forms
+        # (no args="any" for newly added commands).
         return {
             "python": {"executable": sys.executable, "args": "any"},
             "python3": {"executable": sys.executable, "args": "any"},
+            "flake8": {"executable": "flake8", "args": [".", "--count"]},
+            "ruff": {"executable": "ruff", "args": ["check", "."]},
+            "black": {"executable": "black", "args": ["--check", "."]},
+            "isort": {"executable": "isort", "args": ["--check-only", "."]},
         }
 
     def is_allowed(self, name):
