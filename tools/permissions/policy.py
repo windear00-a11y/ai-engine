@@ -139,6 +139,18 @@ def _default_policy_dict():
                 "stdout_limit": 1048576,
                 "stderr_limit": 1048576,
             },
+            # Slice 4C — pip read-only inventory, exact closed forms only.
+            "pip": {
+                "executable": "pip",
+                "forms": [
+                    {"args": ["list"], "approval": "required"},
+                    {"args": ["freeze"], "approval": "required"},
+                    {"args": ["check"], "approval": "required"},
+                ],
+                "timeout_ms": 60000,
+                "stdout_limit": 1048576,
+                "stderr_limit": 1048576,
+            },
         },
         "approvals": {
             # Whether a given (domain) defaults to requiring approval.

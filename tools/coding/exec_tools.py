@@ -77,6 +77,7 @@ class ExecutionRunner:
         # Slice 4A adds read-only linters/formatters with closed exact forms
         # (no args="any" for newly added commands).
         # Slice 4B adds npm test/build with closed exact forms.
+        # Slice 4C adds pip list/freeze/check with closed exact forms.
         return {
             "python": {"executable": sys.executable, "args": "any"},
             "python3": {"executable": sys.executable, "args": "any"},
@@ -85,6 +86,7 @@ class ExecutionRunner:
             "black": {"executable": "black", "args": ["--check", "."]},
             "isort": {"executable": "isort", "args": ["--check-only", "."]},
             "npm": {"executable": "npm", "args": ["test", "run", "build"]},
+            "pip": {"executable": "pip", "args": ["list", "freeze", "check"]},
         }
 
     def is_allowed(self, name):
