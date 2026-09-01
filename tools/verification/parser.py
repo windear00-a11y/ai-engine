@@ -1,10 +1,11 @@
-"""Deterministic parser — Layer 5 5A-1.
+"""Deterministic parser — Layer 5 5A-1 + 5A-2 lint.
 
 Parses execution results into normalized Diagnostics.
 Read-only, no subprocess, no eval, no file writes, no mutation.
 
 Precedence:
 1. syntax_error
+1.5 lint (flake8/ruff default human-readable)
 2. unittest (failure/error)
 3. traceback
 4. fallback build_error
@@ -42,7 +43,11 @@ _RE_EXCEPTION_TAIL = re.compile(
     r'^(?P<exc>[A-Za-z_][A-Za-z0-9_\.]*Error|Exception|AssertionError):\s*(?P<msg>[^\n]*)',
     re.MULTILINE,
 )
-_RE_FLAKE_SKIP = False  # flake8/ruff not in 5A-1
+# 5A-2: flake8 default (file:line:col:CODE msg) and ruff check (file:line:col: CODE msg [*])
+_RE_FLAKE_RUFF = re.compile(
+    r'^(?P<file>[^\s:]+):(?P<line>\d+):(?P<col>\d+):\s*(?P<code>[A-Z]\d+)\s*(?P<msg>[^\n]+?)(?:\s+\[\*\])?\s*$',
+    re.MULTILINE,
+)
 
 
 def _ground_file(q, rel_path):
@@ -167,6 +172,49 @@ def parse(tool, raw, workspace_root=None, db_path=None):
             # Only first match deterministic; but allow multiple distinct files/lines
         if diagnostics:
             # If syntax_error found, return sorted deterministic
+            diagnostics.sort(key=lambda d: (d.file or "", d.line or 0, d.id))
+            return diagnostics
+
+        # Precedence 1.5: lint (flake8/ruff default human-readable) — file:line:col:CODE msg [*]
+        for m in _RE_FLAKE_RUFF.finditer(combined):
+            f = m.group("file")
+            line = int(m.group("line"))
+            col = int(m.group("col"))
+            code = m.group("code")
+            msg_text = m.group("msg").strip()
+            # msg already stripped of trailing [*] by regex; message is CODE: msg
+            msg = f"{code}: {msg_text}"
+            gf, ok = _ground_file(q, f)
+            if ok:
+                d = make_diagnostic(
+                    kind="lint",
+                    certainty="fact",
+                    file=gf,
+                    line=line,
+                    column=col,
+                    symbol=None,
+                    message=msg,
+                    raw=raw_capped,
+                    tool=tool,
+                    exit_code=exit_code,
+                )
+                add(d)
+            else:
+                # Heuristic with file=null to avoid invention (see 5A-2 spec)
+                d = make_diagnostic(
+                    kind="lint",
+                    certainty="heuristic",
+                    file=None,
+                    line=None,
+                    column=None,
+                    symbol=None,
+                    message=f"{code}: {msg_text} (ungrounded {f}:{line}:{col})",
+                    raw=raw_capped,
+                    tool=tool,
+                    exit_code=exit_code,
+                )
+                add(d)
+        if diagnostics:
             diagnostics.sort(key=lambda d: (d.file or "", d.line or 0, d.id))
             return diagnostics
 
