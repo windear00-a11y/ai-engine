@@ -16,6 +16,7 @@ subprocess launch uses ``subprocess.Popen`` with streaming watched reads.
 """
 
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -56,8 +57,11 @@ def classify_command(policy, name):
     return spec
 
 
+_PY_NAME_RE = re.compile(r"^python(?:3(?:\.\d+)?)?$")
+
+
 def is_python_name(name):
-    return name in ("python", "python3")
+    return bool(_PY_NAME_RE.match(name))
 
 
 def check_args(policy, name, args):

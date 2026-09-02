@@ -236,9 +236,11 @@ class ContractValidationTests(unittest.TestCase):
         self.assertEqual(tuple(OPERATIONS),
                          ("search", "get", "related",
                           "follow", "provenance", "inspect"))
-        self.assertFalse(VALID_NODE_TYPES - {
+        # The stable core node types must always remain part of the catalog;
+        # the set may grow additively as the schema evolves.
+        self.assertTrue({
             "concept", "technology", "entity", "procedure",
-            "rule", "example", "dependency"})
+            "rule", "example", "dependency"}.issubset(VALID_NODE_TYPES))
         self.assertTrue(VALID_RELATIONSHIP_KINDS)
 
     def test_unknown_operation_rejected(self):
