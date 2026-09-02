@@ -447,6 +447,49 @@ class ApprovalGate:
                     approval_id=op_id)
         return (False, d, f"rollback denied ({d.reason_code})")
 
+    def authorize_git(self, operation, proposal):
+        """Authorize an approval-gated git WRITE (stage/commit).
+
+        Double-gated: (1) the capability must be configured ``git: allow`` in
+        the path policy, else deny(REASON_GIT_DENIED); (2) the live approver
+        must grant the exact proposal. Every decision (grant and denial) is
+        audited with a fresh operation id, mirroring ``authorize_rollback``.
+
+        The bare ``check(Domain.GIT, ...)`` hard-deny path is intentionally
+        left untouched: only this dedicated method can open git writes, and
+        only when policy explicitly allows the capability.
+
+        Returns ``(allowed, decision, error)``.
+        """
+        if self.path_policy is None:
+            d = deny(REASON_BLOCKED)
+            self._audit(Domain.GIT, proposal, operation, d, "denied")
+            return (False, d, "git requires a path policy")
+        policy = getattr(self.path_policy, "policy", None)
+        if policy is None or getattr(policy, "git", "deny") != "allow":
+            d = deny(REASON_GIT_DENIED)
+            self._audit(Domain.GIT, proposal, operation, d, "denied")
+            return (False, d, "git capability is denied by policy")
+
+        op_id = self._propose_id(Domain.GIT, str(proposal), operation,
+                                 None)
+        approved = False
+        try:
+            approved = bool(self.approver(dict(proposal)))
+        except Exception:
+            approved = False
+        if approved:
+            d = require_approval(REASON_NO_APPROVAL, approval_id=op_id,
+                                 required_scope=proposal)
+            self._last_operation_id = op_id
+            self._audit(Domain.GIT, proposal, operation, d, "approved",
+                        approval_id=op_id)
+            return (True, d, None)
+        d = deny(REASON_NO_APPROVAL)
+        self._audit(Domain.GIT, proposal, operation, d, "denied",
+                    approval_id=op_id)
+        return (False, d, f"git {operation} denied ({d.reason_code})")
+
     def _propose_id(self, domain, target, operation, content):
         csum = ""
         if isinstance(content, bytes):

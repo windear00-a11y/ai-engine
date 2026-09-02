@@ -183,12 +183,17 @@ class GitToolsTests(unittest.TestCase):
     def test_closed_allowlist_no_arbitrary_git(self):
         root = self.repo()
         git = GitTools(root)
-        res = git.commit("-m", "nope")
-        self.assertFalse(res["ok"])
-        self.assertIn("not an allowed read tool", res["error"])
+        # commit/stage are real approval-gated write tools; without a gate they
+        # fail closed, never executing.
+        self.assertFalse(git.commit("nope")["ok"])
+        # `add` is not a public tool name -> hard closed via __getattr__.
         res = git.add("tracked.txt")
         self.assertFalse(res["ok"])
-        # the repo is unchanged (nothing for commit/add would do on clean repo)
+        self.assertIn("not an allowed read tool", res["error"])
+        # push/force/reb sha never execute
+        for name in ("push", "force", "rebase", "branch", "checkout"):
+            self.assertFalse(getattr(git, name)("x")["ok"], name)
+        # the repo is unchanged on a clean tree
         self.assertEqual(git.status()["count"], 0)
 
     # -- engine + coordinator integration ---------------------------------
@@ -233,15 +238,21 @@ class GitToolsTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(f.read()).hexdigest(),
                              PROD_KB_SHA)
 
-    def test_git_tools_no_shell_no_writes(self):
+    def test_git_tools_no_shell_no_destructive_writes(self):
         import inspect
         import tools.git as gt
         src = inspect.getsource(gt)
         self.assertNotIn("shell=True", src)
         self.assertNotIn("GIT_DIR", src)
         self.assertIn("_ALLOWED_COMMANDS", src)
-        self.assertNotIn("def commit(", src)
-        self.assertNotIn("def add(", src)
+        # only the two permitted write faces exist; no destructive git
+        # operations are implemented.
         self.assertNotIn("def push(", src)
         self.assertNotIn("def amend(", src)
-        self.assertNotIn("def shell(", src)
+        self.assertNotIn("def force(", src)
+        self.assertNotIn("def delete(", src)
+        self.assertNotIn("def reset(", src)
+        self.assertNotIn("def merge(", src)
+        self.assertNotIn("def rebase(", src)
+        self.assertIn("def commit(", src)      # the only two write tools
+        self.assertIn("def stage(", src)

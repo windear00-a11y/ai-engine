@@ -24,10 +24,17 @@ _MIN_LOG = 1
 
 
 class GitTools:
-    """Namespaced git inspection bound to one workspace root."""
+    """Namespaced git inspection bound to one workspace root.
 
-    def __init__(self, workspace_root):
+    Reads (``status``/``diff``/``log``) are ungated. Writes (``stage``/
+    ``commit``) are approval-gated through ``permissions.authorize_git`` and
+    double-checked for policy + live approver. Nothing here can push, force,
+    amend, rewrite history, touch hooks or config, or escape the workspace.
+    """
+
+    def __init__(self, workspace_root, permissions=None):
         self.root = os.path.realpath(workspace_root or ".")
+        self.permissions = permissions
 
     # -- private plumbing --------------------------------------------------
 
@@ -160,6 +167,85 @@ class GitTools:
             commits.append({"hash": head, "subject": subject})
         return {"ok": True, "repo": self.root, "commits": commits,
                 "count": len(commits)}
+
+    # -- approval-gated writes (7B) ---------------------------------------
+
+    def _authorize(self, operation, proposal, message):
+        if self.permissions is None:
+            return {"ok": False, "error":
+                    "git %s requires an approval gate" % operation}
+        if not hasattr(self.permissions, "authorize_git"):
+            return {"ok": False, "error":
+                    "approval gate does not support git authorization"}
+        allowed, _d, err = self.permissions.authorize_git(
+            operation, proposal)
+        if not allowed:
+            return {"ok": False, "error": err,
+                    "operation": operation, "message": message}
+
+    def stage(self, paths):
+        """Approval-gated ``git add -- <paths>``; paths bounded to root."""
+        if not isinstance(paths, list) or not paths:
+            return {"ok": False, "error":
+                    "paths must be a non-empty list"}
+        if len(paths) > 100:
+            return {"ok": False, "error": "too many paths"}
+        abs_paths = []
+        for rel in paths:
+            if not isinstance(rel, str):
+                return {"ok": False, "error":
+                        "every path must be a string"}
+            abs_path, perr = self._validate_rel_path(rel)
+            if perr:
+                return {"ok": False, "error": perr}
+            abs_paths.append(abs_path)
+
+        gate = self._authorize("stage", {"op": "stage", "paths": paths}, None)
+        if gate is not None:
+            return gate
+
+        rc, out, err = self._spawn(["add", "--"] + abs_paths)
+        if rc is None:
+            return {"ok": False, "error": err}
+        if rc != 0:
+            return {"ok": False, "error": self._describe(err)}
+        staged = self.status().get("staged", [])
+        return {"ok": True, "op": "stage", "staged": staged,
+                "paths": [os.path.relpath(p, self.root) for p in abs_paths],
+                "count": len(abs_paths)}
+
+    def commit(self, message):
+        """Approval-gated ``git commit -m <message>``; exactly-once."""
+        if not isinstance(message, str) or not message.strip():
+            return {"ok": False, "error":
+                    "message must be a non-empty string"}
+        if "\n" in message:
+            return {"ok": False, "error":
+                    "message must be a single line"}
+        if len(message) > 200:
+            return {"ok": False, "error":
+                    "message must be at most 200 characters"}
+
+        gate = self._authorize("commit", {"op": "commit", "message": message},
+                               message)
+        if gate is not None:
+            return gate
+
+        rc, out, err = self._spawn(["commit", "-m", message])
+        if rc is None:
+            return {"ok": False, "error": err}
+        if rc != 0:
+            return {"ok": False, "error": self._describe(err)}
+        head = None
+        for ln in out.splitlines():
+            if " " in ln:
+                head = ln.split()[0]
+                break
+        log = self.log(n=1).get("commits", [])
+        if log:
+            head = log[0]["hash"]
+        return {"ok": True, "op": "commit", "message": message,
+                "commit": head, "short": head}
 
     # -- safety net -------------------------------------------------------
 

@@ -46,6 +46,7 @@ class TaskEngine:
         "file.write", "file.edit", "file.mkdir",
         "project.build", "project.test",
         "rollback.operation", "rollback.confirm",
+        "git.stage", "git.commit",
     }
 
     def __init__(self, knowledge_dir=None, workspace_root=None,
@@ -79,7 +80,7 @@ class TaskEngine:
         self.default_max_duration = max_duration
         self._current_task_id = None
         from tools.git import GitTools
-        self.git = GitTools(workspace_root)
+        self.git = GitTools(workspace_root, permissions=permissions)
         self.registry = self._build_registry()
 
     def _build_registry(self):
@@ -107,6 +108,8 @@ class TaskEngine:
             "git.status": self.git.status,
             "git.diff": self.git.diff,
             "git.log": self.git.log,
+            "git.stage": self.git.stage,
+            "git.commit": self.git.commit,
         }
 
     def _planner_generate(self, intent=None, target=None, error=None,
