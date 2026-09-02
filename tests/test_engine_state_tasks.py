@@ -512,5 +512,57 @@ class EngineStateConcurrencyTests(unittest.TestCase):
             self.assertEqual(json.loads(s["result_json"])["content"], i)
 
 
+class EngineStateListTasksTests(unittest.TestCase):
+    """Layer 6F: public read-only task enumeration."""
+
+    def test_empty_state(self):
+        st = EngineState(db_path=_tmp_db())
+        self.assertEqual(st.list_tasks(), [])
+        self.assertEqual(st.list_tasks(status="running"), [])
+
+    def test_mixed_statuses_ordered_and_filtered(self):
+        db = _tmp_db()
+        st = EngineState(db_path=db)
+        st.create_task("b", {"id": "b"}, "/ws")
+        st.create_task("a", {"id": "a"}, "/ws")
+        st.create_task("c", {"id": "c"}, "/ws")
+        st.update_task_status("c", "running", expected_status="planned")
+        st.claim_task("a", "owner-1")
+        all_rows = st.list_tasks()
+        self.assertEqual([r["task_id"] for r in all_rows],
+                         ["a", "b", "c"])  # deterministic asc
+        run_rows = st.list_tasks(status="running")
+        self.assertEqual([r["task_id"] for r in run_rows], ["a", "c"])
+
+    def test_unknown_status_fails_closed(self):
+        st = EngineState(db_path=_tmp_db())
+        self.assertEqual(st.list_tasks(status="bogus"), [])
+
+    def test_summary_fields_match_rows(self):
+        db = _tmp_db()
+        st = EngineState(db_path=db)
+        st.create_task("t1", {"id": "t1"}, "/ws", planner_version="9")
+        st.claim_task("t1", "owner-z")
+        row = st.get_task("t1")
+        listing = st.list_tasks(status="running")[0]
+        self.assertEqual(listing["task_id"], "t1")
+        self.assertEqual(listing["status"], row["status"])
+        self.assertEqual(listing["owner_token"], "owner-z")
+        self.assertEqual(listing["planner_version"], row["planner_version"])
+        self.assertEqual(listing["created_at_epoch"], row["created_at_epoch"])
+
+    def test_read_only_no_mutation(self):
+        db = _tmp_db()
+        st = EngineState(db_path=db)
+        st.create_task("t1", {"id": "t1"}, "/ws")
+        before = (dict(st.get_task("t1")),
+                  _sha(db))
+        st.list_tasks()
+        st.list_tasks(status="planned")
+        after = (dict(st.get_task("t1")),
+                 _sha(db))
+        self.assertEqual(after, before)
+
+
 if __name__ == "__main__":
     unittest.main()

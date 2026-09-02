@@ -50,15 +50,9 @@ def reconcile(state):
 
 
 def _running_task_ids(state):
-    # No dedicated list API exists yet (6F); scan the tasks table via a
-    # bounded read. This is read-only and deterministic.
-    conn = state._connect()
-    try:
-        rows = conn.execute(
-            "SELECT task_id FROM tasks WHERE status = 'running'").fetchall()
-        return [row["task_id"] for row in rows]
-    finally:
-        conn.close()
+    # Public read-only enumeration (Layer 6F); no private connection access.
+    return [row["task_id"]
+            for row in state.list_tasks(status=_RUNNING)]
 
 
 def _reconcile_task(state, task_id):

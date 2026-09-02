@@ -584,6 +584,35 @@ class EngineState:
         finally:
             conn.close()
 
+    def list_tasks(self, status=None):
+        """Read-only system-level enumeration of task summaries.
+
+        ``status=None`` returns every task; otherwise only tasks in that exact
+        status. Deterministic (task_id ASC). Unknown status strings fail
+        closed with an empty list (nothing is queried). Never mutates and
+        never touches the production knowledge database — this is the public
+        surface that replaces private ``_connect`` scans (Layer 6F).
+        """
+        if status is not None and status not in TASK_STATUSES:
+            return []
+        conn = self._connect()
+        try:
+            if status is None:
+                rows = conn.execute(
+                    "SELECT task_id, status, status_reason, owner_token, "
+                    "created_at_epoch, updated_at_epoch, finished_at_epoch, "
+                    "planner_version FROM tasks ORDER BY task_id ASC"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT task_id, status, status_reason, owner_token, "
+                    "created_at_epoch, updated_at_epoch, finished_at_epoch, "
+                    "planner_version FROM tasks WHERE status = ? "
+                    "ORDER BY task_id ASC", (status,)).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
     def update_task_status(self, task_id, status, expected_status=None,
                            status_reason=None, finished_at_epoch=None):
         """Guarded task status transition (compare-and-set semantics).

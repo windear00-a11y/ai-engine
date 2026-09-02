@@ -124,8 +124,8 @@ class RecoveryTests(unittest.TestCase):
 
     def test_recovery_only_reads_via_enginestate(self):
         # engine.recovery must NEVER write via raw sqlite: no schema DDL, no
-        # commit, and the only connection it reaches is EngineState's own
-        # (bounded, read-only scan, pending a 6F list API).
+        # commit, and never reach a private connection. The running-task scan
+        # goes through the public list API (Layer 6F).
         import inspect
         import engine.recovery as rec
         src = inspect.getsource(rec)
@@ -133,8 +133,9 @@ class RecoveryTests(unittest.TestCase):
         self.assertNotIn(".commit()", src)
         self.assertNotIn("INSERT INTO", src)
         self.assertNotIn("UPDATE tasks", src)
-        self.assertIn("state._connect()", src)
-        self.assertIn("SELECT task_id FROM tasks WHERE status = 'running'", src)
+        self.assertNotIn("_connect", src)
+        self.assertNotIn("SELECT", src)
+        self.assertIn("list_tasks(status=_RUNNING)", src)
         self.assertIn("list_task_steps", src)
         self.assertIn("update_task_status", src)
 
