@@ -72,6 +72,8 @@ class PersistentCoordinator:
         if not isinstance(owner_token, str) or not owner_token:
             raise ValueError("owner_token must be a non-empty string")
         self.owner_token = owner_token
+        from engine.ownership import OwnerScope
+        self.scope = OwnerScope(state, owner_token)
 
     # ------------------------------------------------------------------ #
     # submit: planner output -> durable planned task                      #
@@ -137,7 +139,7 @@ class PersistentCoordinator:
         # allows a direct "planned" row; TASK_STEP_TRANSITIONS forbids
         # running->planned, so only this path is legal.
         if dry_run and tool in self.engine.MUTATING:
-            self.state.ensure_task_step(
+            self.scope.ensure_task_step(
                 task_id, step_id, i, tool, raw_inputs, status=_STEP_PLANNED)
             rec = self.engine._run_step(step, store, dry_run, planned_actions)
             store[step_id] = rec
@@ -145,9 +147,9 @@ class PersistentCoordinator:
             return rec
 
         # Write-ahead intent, then advance pending -> running -> execute.
-        self.state.ensure_task_step(task_id, step_id, i, tool, raw_inputs,
+        self.scope.ensure_task_step(task_id, step_id, i, tool, raw_inputs,
                                     status=_STEP_PENDING)
-        self.state.update_task_step_status(
+        self.scope.update_task_step_status(
             task_id, step_id, _STEP_RUNNING, expected_status=_STEP_PENDING)
 
         rec = self.engine._run_step(step, store, dry_run, planned_actions)
@@ -155,10 +157,10 @@ class PersistentCoordinator:
 
         status = rec["status"]
         if status == _STEP_SUCCESS:
-            self.state.update_task_step_status(
+            self.scope.update_task_step_status(
                 task_id, step_id, _STEP_SUCCESS, expected_status=_STEP_RUNNING)
         elif status == _STEP_FAILED:
-            self.state.update_task_step_status(
+            self.scope.update_task_step_status(
                 task_id, step_id, _STEP_FAILED, expected_status=_STEP_RUNNING)
         # Any other status (never produced by _run_step outside dry-run
         # mutating tools) leaves the row "running"; 6C reconciles it. No
@@ -169,7 +171,7 @@ class PersistentCoordinator:
         return rec
 
     def _write_step_result(self, task_id, step_id, rec):
-        self.state.update_step_result(
+        self.scope.update_step_result(
             task_id, step_id, result_json=rec["result"],
             error=rec.get("error"),
             started_at_epoch=rec.get("started_at"),
@@ -182,10 +184,10 @@ class PersistentCoordinator:
         op_id = rec["result"].get("operation_id")
         if not isinstance(op_id, str) or not op_id:
             return None
-        return self.state.attach_operation(task_id, step_id, op_id)
+        return self.scope.attach_operation(task_id, step_id, op_id)
 
     def _persist_skipped(self, task_id, step, idx, error):
-        self.state.ensure_task_step(
+        self.scope.ensure_task_step(
             task_id, step["id"], idx, step.get("tool"),
             step.get("inputs", {}) or {}, status=_STEP_SKIPPED,
             error=error)
@@ -255,8 +257,8 @@ class PersistentCoordinator:
         owned = self._assert_owner(task_id)
         if not owned["ok"]:
             # Claimed but ownership mismatch: mark it invalid, fail closed.
-            self.state.update_task_status(task_id, _STATUS_INVALID,
-                                          status_reason=owned["error"])
+            self.scope.update_task_status(task_id, _STATUS_INVALID,
+                                           status_reason=owned["error"])
             return _as_fail_closed(task_id, owned["error"])
 
         try:
@@ -350,10 +352,10 @@ class PersistentCoordinator:
             "duration": finished - started,
         }
         trickle = None if terminal == _STATUS_COMPLETED else overall
-        self.state.update_task_result(task["id"], result,
-                                      planner_version=task.get(
-                                          "planner_version"))
-        self.state.update_task_status(task["id"], terminal,
+        self.scope.update_task_result(task["id"], result,
+                                       planner_version=task.get(
+                                           "planner_version"))
+        self.scope.update_task_status(task["id"], terminal,
                                       expected_status=_STATUS_RUNNING,
                                       status_reason=trickle)
 
@@ -374,7 +376,7 @@ class PersistentCoordinator:
         }
 
     def _fail_task(self, task_id, reason):
-        self.state.update_task_status(task_id, _STATUS_INVALID,
+        self.scope.update_task_status(task_id, _STATUS_INVALID,
                                       expected_status=_STATUS_RUNNING,
                                       status_reason=reason)
         return {"task_id": task_id, "status": _STATUS_INVALID,
