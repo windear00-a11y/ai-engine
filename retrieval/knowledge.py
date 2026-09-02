@@ -1,3 +1,8 @@
+"""KnowledgeStore retrieval module.
+
+Structured knowledge store backed by a persistent repository.
+"""
+
 import json
 import os
 
