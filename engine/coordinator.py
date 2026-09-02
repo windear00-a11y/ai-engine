@@ -211,6 +211,15 @@ class PersistentCoordinator:
         return records
 
     # ------------------------------------------------------------------ #
+    # recovery                                                           #
+    # ------------------------------------------------------------------ #
+
+    def reconcile(self):
+        """Delegate to :mod:`engine.recovery` on this coordinator's store."""
+        from engine.recovery import reconcile
+        return reconcile(self.state)
+
+    # ------------------------------------------------------------------ #
     # run                                                                 #
     # ------------------------------------------------------------------ #
 
