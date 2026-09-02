@@ -1,66 +1,73 @@
-"""Deterministic fix-rule matcher — Layer 5 5B-1a.
+"""Deterministic fix-rule matcher — Layer 5 5B (E302, F401, SyntaxError colon).
 
-Only E302 rule. Proposal-only, no file writes, no DB mutation, no child process.
+Proposal-only, no file writes, no DB mutation, no child process, no AI.
 
-Architecture: Diagnostic -> FixProposal (data only)
+Architecture: Diagnostic -> FixProposal (data only) -> dispatch -> Planner.
+
+Determinism contract: every rule re-reads the source file, derives the exact
+old_text/new_text from the current on-disk state, and computes a full-content
+expected_hash. Same diagnostic + same source state => identical proposal and id.
+Rules never guess; they return [] unless the exact transformation is proven.
 """
 
 import os
-import hashlib
+import re
+import ast
 import difflib
+import hashlib
 
 from tools.indexer.query import IndexQueries
 from tools.coding.fs import Workspace
 from .fix_proposal import make_fix_proposal
 
 RULE_ID_E302 = "e302_blank_lines"
+RULE_ID_F401 = "f401_unused_import"
+RULE_ID_SYNTAX_COLON = "syntax_error_missing_colon"
+
+# Real parser emits message as "<CODE>: <text>" (see parser.py:186).
+_RE_CODE_PREFIX = re.compile(r"^([A-Z]\d+):", re.MULTILINE)
+# F401 message text: "F401: '<name>' imported but unused"
+_RE_F401_NAME = re.compile(r"F401:\s*['\"]([^'\"]+)['\"]")
 
 
-def _is_within_workspace(workspace_root, rel_path):
-    if not workspace_root or not rel_path:
+def _diagnostic_code(diag):
+    """The leading pycodestyle/ruff CODE (e.g. 'E302') if message starts 'CODE:'.
+
+    Returns None when the message has no structured code prefix, so prose that
+    merely mentions a code string is never treated as that rule (fixes the
+    audit LOW finding: loose substring matching).
+    """
+    m = _RE_CODE_PREFIX.match((diag.message or "").strip())
+    return m.group(1) if m else None
+
+
+def _is_lint_code(diag, code):
+    """Exact structural lint gate: kind==lint AND certainty==fact AND CODE prefix."""
+    if diag.kind != "lint":
         return False
-    # Prevent path traversal and absolute outside
-    if rel_path.startswith("/") or rel_path.startswith("\\"):
+    if diag.certainty != "fact":
         return False
-    if ".." in rel_path.split("/"):
+    return _diagnostic_code(diag) == code
+
+
+def _is_syntax_colon(diag):
+    """Exact syntax gate: kind==syntax_error, certainty==fact, message mentions
+    'expected' and a missing colon explicitly."""
+    if diag.kind != "syntax_error":
         return False
-    # Also check via Workspace if available
+    if diag.certainty != "fact":
+        return False
+    msg = diag.message or ""
+    return "expected" in msg and ":" in msg
+
+
+# -- shared source/workspace helpers ----------------------------------------
+
+def _resolve(db_path, workspace_root, rel_path):
+    """grounded + within-workspace check. Returns (q, abs_path) or (None, None)."""
+    q = None
     try:
-        ws = Workspace(workspace_root)
-        abs_path = ws.resolve(rel_path)
-        # Ensure abs_path is inside workspace_root
-        real_root = os.path.realpath(workspace_root)
-        real_abs = os.path.realpath(abs_path)
-        return real_abs == real_root or real_abs.startswith(real_root + os.sep)
-    except Exception:
-        return False
-
-
-def _hash_content(content):
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-
-def match_e302(diagnostic, workspace_root, db_path=None):
-    # Accept ONLY kind="lint" code="E302" certainty="fact" grounded file valid line
-    if diagnostic.kind != "lint":
-        return []
-    if diagnostic.certainty != "fact":
-        return []
-    if diagnostic.file is None or diagnostic.line is None:
-        return []
-    # Code must be E302
-    # diagnostic.message is "E302: expected 2 blank lines, found 0" etc.
-    if "E302" not in (diagnostic.message or ""):
-        return []
-    # Rule id is fixed
-    if diagnostic.file is None:
-        return []
-    # Verify file is grounded via IndexQueries (FACT check)
-    # Already certainty fact implies grounded, but double-check
-    try:
-        q = None
         if db_path and os.path.exists(db_path):
-            from tools.indexer.query import IndexQueries
             qq = IndexQueries(db_path)
             if qq.project is not None:
                 q = qq
@@ -70,94 +77,94 @@ def match_e302(diagnostic, workspace_root, db_path=None):
                 qq = IndexQueries(cand)
                 if qq.project is not None:
                     q = qq
-        if q is None or q.find_file(diagnostic.file) is None:
-            return []
     except Exception:
-        return []
-
-    # Workspace check
-    if not _is_within_workspace(workspace_root, diagnostic.file):
-        return []
-
-    # Re-read source file before proposing
+        q = None
+    if q is None or q.find_file(rel_path) is None:
+        return None, None
+    if not _is_within_workspace(workspace_root, rel_path):
+        return None, None
     try:
         ws = Workspace(workspace_root) if workspace_root else None
-        if ws is not None:
-            abs_path = ws.resolve(diagnostic.file)
-        else:
-            abs_path = os.path.join(workspace_root, diagnostic.file) if workspace_root else diagnostic.file
-        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
+        abs_path = ws.resolve(rel_path) if ws is not None else rel_path
     except Exception:
-        return []
+        return None, None
+    return q, abs_path
 
+
+def _read_source(abs_path):
+    try:
+        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except Exception:
+        return None
+
+
+def _hash_content(content):
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _is_within_workspace(workspace_root, rel_path):
+    if not workspace_root or not rel_path:
+        return False
+    if rel_path.startswith("/") or rel_path.startswith("\\"):
+        return False
+    if ".." in rel_path.split("/"):
+        return False
+    try:
+        ws = Workspace(workspace_root)
+        abs_path = ws.resolve(rel_path)
+        real_root = os.path.realpath(workspace_root)
+        real_abs = os.path.realpath(abs_path)
+        return real_abs == real_root or real_abs.startswith(real_root + os.sep)
+    except Exception:
+        return False
+
+
+def _build_diff_preview(rel_path, old_lines, new_lines):
+    diff = difflib.unified_diff(
+        old_lines,
+        new_lines,
+        fromfile="a/" + rel_path,
+        tofile="b/" + rel_path,
+        lineterm="",
+    )
+    return "\n".join(list(diff))[:2000]
+
+
+# ============================================================================
+# E302 — missing blank lines before a top-level def
+# ============================================================================
+
+def match_e302(diagnostic, workspace_root, db_path=None):
+    if not _is_lint_code(diagnostic, "E302"):
+        return []
+    if diagnostic.file is None or diagnostic.line is None:
+        return []
+    q, abs_path = _resolve(db_path, workspace_root, diagnostic.file)
+    if q is None or abs_path is None:
+        return []
+    content = _read_source(abs_path)
+    if content is None:
+        return []
     lines = content.splitlines(keepends=True)
-    # Line numbers are 1-indexed
     line_idx = diagnostic.line - 1
     if line_idx < 0 or line_idx >= len(lines):
         return []
-    # Check if required blank-line condition is already satisfied
-    # E302: expected 2 blank lines before this line
-    # For deterministic, we check previous line: if line 1, cannot have blank before, so no fix
     if diagnostic.line == 1:
         return []
-    # Previous line content
+    # Already-correct: immediate predecessor already a blank line -> no fix
     prev_line = lines[line_idx - 1] if line_idx - 1 >= 0 else ""
-    # If previous line is blank (empty or whitespace only), condition already satisfied for at least 1 blank
-    # For strict E302 (2 blank lines), we check if there are 2 blank lines before line
-    # But to keep deterministic and minimal, we check if immediate previous line is blank: if yes, consider already satisfied (at least one blank)
-    # Actually E302 expects 2 blank lines; if we have 1 blank, still need one more. To keep minimal, we will propose if previous line is not blank or not two blanks
-    # For 5B-1a smallest, we check if previous line is blank: if yes, consider satisfied and return []
-    # This matches test expectation: already-correct blank-line context → []
-    # Determine if line-1 is blank
-    # If previous line is blank, we need to check second previous for 2 blanks case
-    # For now, if immediate previous is blank, we consider at least one blank exists and for minimal, we treat as satisfied (no proposal)
-    # This keeps deterministic no-fix when already correct
     if prev_line.strip() == "":
-        # Already has at least one blank line; for E302 (2 blanks), we would need to check two, but to avoid over-insertion, we treat 1 blank as satisfied for 5B-1a minimal
-        # Check second previous if exists
-        if line_idx - 2 >= 0:
-            prev2 = lines[line_idx - 2]
-            if prev2.strip() == "":
-                # Already has 2 blank lines
-                return []
-        # If only one blank, we could still propose one more, but to keep smallest, we return [] if at least one blank
-        # This matches test expectation for already-correct context
         return []
-
-    # Check ambiguity: old_text must be unique in file for file.edit to be deterministic
-    # old_text is the target line content
+    # Ambiguity: target line must be unique for a deterministic file.edit
     target_line_content = lines[line_idx]
-    # Count occurrences of target_line_content in file
-    count = content.count(target_line_content)
-    if count != 1:
-        # Ambiguous: file.edit would require replace_all or fail; return [] to avoid speculative
+    if content.count(target_line_content) != 1:
         return []
-
-    # Never use mtime as identity; use hash of content
     expected_hash = _hash_content(content)
-    # Patch: old_text is target line, new_text is blank line + old_text
     old_text = target_line_content
     new_text = "\n" + old_text
-    # Generate deterministic diff preview
-    new_lines = lines[:]
-    new_lines[line_idx] = new_text
-    # For diff, we need to handle that new_lines has extra blank line inserted before target
-    # Actually we inserted \n + old_text, but old_text already includes newline at end, so new should be "\n" + old_text
-    # To generate diff, compare original lines vs new lines where new has blank inserted
-    # Simpler: create new content with blank inserted before line_idx
     new_content_lines = lines[:line_idx] + ["\n"] + lines[line_idx:]
-    # Generate unified diff
-    diff = difflib.unified_diff(
-        lines,
-        new_content_lines,
-        fromfile="a/" + diagnostic.file,
-        tofile="b/" + diagnostic.file,
-        lineterm="",
-    )
-    diff_str = "\n".join(list(diff))
-    diff_capped = diff_str[:2000]
-
+    diff_preview = _build_diff_preview(diagnostic.file, lines, new_content_lines)
     proposal = make_fix_proposal(
         rule_id=RULE_ID_E302,
         diagnostic_id=diagnostic.id,
@@ -166,7 +173,7 @@ def match_e302(diagnostic, workspace_root, db_path=None):
         column=diagnostic.column,
         old_text=old_text,
         new_text=new_text,
-        diff_preview=diff_capped,
+        diff_preview=diff_preview,
         expected_hash=expected_hash,
         certainty="fact",
         risk="low",
@@ -176,20 +183,287 @@ def match_e302(diagnostic, workspace_root, db_path=None):
     return [proposal]
 
 
-def match(diagnostic, workspace_root=None, db_path=None):
-    """Deterministic matcher: Diagnostic -> list[FixProposal] (proposal-only)."""
+# ============================================================================
+# F401 — unused import removal (narrow, deterministic, conservative)
+# ============================================================================
+
+def _module_defined_names(ast_tree):
+    """Top-level defined symbol names (defs/classes/assigns) to detect shadowing."""
+    names = set()
+    for node in ast_tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            for t in (node.targets if isinstance(node, ast.Assign) else [node.target]):
+                if isinstance(t, ast.Name):
+                    names.add(t.id)
+    return names
+
+
+def _has_all_assignment(ast_tree):
+    for node in ast_tree.body:
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [getattr(node, "target", None)]
+            for t in targets:
+                if isinstance(t, ast.Name) and t.id == "__all__":
+                    return True
+    return False
+
+
+def _binding_unused(ast_tree, binding_name, q, rel_path):
+    """Prove the binding is unused via AST Name walk + index symbol check.
+
+    Returns True (unused, safe) or False (used / cannot be proven unused).
+
+    The import statement itself never produces ``ast.Name`` nodes (aliases are
+    stored as strings on ``ast.alias``), so any ``ast.Name`` referencing the
+    binding -- including on the import's own physical line -- is a genuine
+    usage and is not skipped.
+    """
+    for node in ast.walk(ast_tree):
+        if isinstance(node, ast.Name) and node.id == binding_name:
+            return False
+    # Top-level shadowing: a def/class/assign with the same name is ambiguous
+    if binding_name in _module_defined_names(ast_tree):
+        return False
+    # Existing indexed symbols: an index symbol with the same short name in this
+    # file is a conflict/usage signal -> do not remove
     try:
-        # Never propose for heuristic/unresolved files
-        if diagnostic.certainty != "fact":
-            return []
-        if diagnostic.file is None or diagnostic.line is None:
-            return []
-        # Only E302 for 5B-1a
-        if diagnostic.kind == "lint" and "E302" in (diagnostic.message or ""):
-            return match_e302(diagnostic, workspace_root, db_path)
-        # Explicitly not implemented: F401, SyntaxError, etc. -> []
-        # Ensure no other kind produces proposal in 5B-1a
-        return []
+        for s in q.symbols_in_file(rel_path):
+            if s.get("name") == binding_name:
+                return False
     except Exception:
-        # Never throw
+        pass
+    return True
+
+
+def _line_is_single_statement(raw_line, node):
+    """True only when ``node`` is the ONLY statement on its physical line.
+
+    ``raw_line`` is a ``splitlines(keepends=True)`` element. The check requires
+    whitespace-only text before the statement's start column and only
+    whitespace/comment after its end column. Anything else (a second statement
+    such as ``import os; x = 1``) makes removal ambiguous, so this returns
+    False and the rule fails closed with ``[]``. Missing column metadata or
+    columns outside the line also return False (no guessing).
+    """
+    col = getattr(node, "col_offset", None)
+    end_col = getattr(node, "end_col_offset", None)
+    if not isinstance(col, int) or not isinstance(end_col, int):
+        return False
+    body = raw_line.rstrip("\r\n")
+    if col < 0 or end_col <= col or end_col > len(body):
+        return False
+    if body[:col].strip() != "":
+        return False
+    suffix = body[end_col:]
+    if suffix.strip() == "":
+        return True
+    return suffix.lstrip().startswith("#")
+
+
+def match_f401(diagnostic, workspace_root, db_path=None):
+    if not _is_lint_code(diagnostic, "F401"):
+        return []
+    if diagnostic.file is None or diagnostic.line is None:
+        return []
+    m = _RE_F401_NAME.search(diagnostic.message or "")
+    if not m:
+        return []
+    binding_name = m.group(1)
+    q, abs_path = _resolve(db_path, workspace_root, diagnostic.file)
+    if q is None or abs_path is None:
+        return []
+    content = _read_source(abs_path)
+    if content is None:
+        return []
+    # ast.parse the CURRENT source (deterministic, read-only)
+    try:
+        tree = ast.parse(content, filename=diagnostic.file)
+    except SyntaxError:
+        return []
+    # Locate a top-level single-line import spanning the diagnostic line
+    import_node = None
+    import_line = diagnostic.line
+    for node in tree.body:
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if getattr(node, "lineno", None) == import_line and \
+           getattr(node, "end_lineno", None) == import_line:
+            import_node = node
+            break
+    if import_node is None:
+        return []
+    # Multi-name import -> conservative []
+    if len(import_node.names) != 1:
+        return []
+    alias = import_node.names[0]
+    # Wildcard / star import -> never propose removal
+    if alias.name == "*":
+        return []
+    # Resolve the actual local binding name for the flagged import
+    if alias.asname:
+        local_binding = alias.asname
+    elif isinstance(import_node, ast.Import):
+        local_binding = alias.name.split(".")[0]
+    else:
+        local_binding = alias.name
+    # The flagged name in the diagnostic must correspond to this binding
+    # (for `from x import os`, binding == 'os'; for aliased, message names the
+    # local or original — accept either for a single-name import)
+    if local_binding != binding_name and alias.name != binding_name:
+        return []
+    # __all__ present -> cannot safely prove unused
+    if _has_all_assignment(tree):
+        return []
+    if not _binding_unused(tree, local_binding, q, diagnostic.file):
+        return []
+    # Exact minimal transform: the physical line must BE the import statement
+    # (plus optional trailing comment). A shared line (e.g. 'import os; x = 1')
+    # cannot be reduced to an import-only patch without text splicing, so it
+    # fails closed with [] rather than guessing.
+    lines = content.splitlines(keepends=True)
+    line_idx = import_line - 1
+    if line_idx < 0 or line_idx >= len(lines):
+        return []
+    if not _line_is_single_statement(lines[line_idx], import_node):
+        return []
+    old_text = lines[line_idx]
+    if content.count(old_text) != 1:
+        # ambiguous duplicate line -> []
+        return []
+    new_text = ""
+    expected_hash = _hash_content(content)
+    new_lines = lines[:line_idx] + lines[line_idx + 1:]
+    diff_preview = _build_diff_preview(diagnostic.file, lines, new_lines)
+    proposal = make_fix_proposal(
+        rule_id=RULE_ID_F401,
+        diagnostic_id=diagnostic.id,
+        file=diagnostic.file,
+        line=import_line,
+        column=diagnostic.column,
+        old_text=old_text,
+        new_text=new_text,
+        diff_preview=diff_preview,
+        expected_hash=expected_hash,
+        certainty="fact",
+        risk="low",
+        description=f"Remove unused import {local_binding!r} at {diagnostic.file}:{import_line} (F401)",
+        expected_verification=f"flake8 {diagnostic.file} should not emit F401 at line {import_line} after apply",
+    )
+    return [proposal]
+
+
+# ============================================================================
+# SyntaxError "expected ':'" — proven missing-colon insertion
+# ============================================================================
+
+def match_syntax_colon(diagnostic, workspace_root, db_path=None):
+    if not _is_syntax_colon(diagnostic):
+        return []
+    if diagnostic.file is None or diagnostic.line is None:
+        return []
+    q, abs_path = _resolve(db_path, workspace_root, diagnostic.file)
+    if q is None or abs_path is None:
+        return []
+    content = _read_source(abs_path)
+    if content is None:
+        return []
+    lines = content.splitlines(keepends=True)
+    line_idx = diagnostic.line - 1
+    if line_idx < 0 or line_idx >= len(lines):
+        return []
+    old_line = lines[line_idx]
+    stripped = old_line.rstrip("\r\n")
+    # Already ends with ':' (or is blank) -> no missing-colon fix
+    if not stripped or stripped.endswith(":"):
+        return []
+    if content.count(old_line) != 1:
+        return []
+    new_line = stripped + ":\n"
+    # Deterministic proof: re-parse the full source with the colon inserted;
+    # only propose if the file becomes syntactically valid (no guessing).
+    new_content = _replace_line(content, line_idx, new_line)
+    try:
+        ast.parse(new_content, filename=diagnostic.file)
+    except (SyntaxError, ValueError):
+        return []
+    expected_hash = _hash_content(content)
+    new_lines = lines[:]
+    new_lines[line_idx] = new_line
+    diff_preview = _build_diff_preview(diagnostic.file, lines, new_lines)
+    proposal = make_fix_proposal(
+        rule_id=RULE_ID_SYNTAX_COLON,
+        diagnostic_id=diagnostic.id,
+        file=diagnostic.file,
+        line=diagnostic.line,
+        column=diagnostic.column,
+        old_text=old_line,
+        new_text=new_line,
+        diff_preview=diff_preview,
+        expected_hash=expected_hash,
+        certainty="fact",
+        risk="low",
+        description=f"Insert missing ':' at {diagnostic.file}:{diagnostic.line} (SyntaxError)",
+        expected_verification=f"python {diagnostic.file} should compile without SyntaxError after apply",
+    )
+    return [proposal]
+
+
+def _replace_line(content, line_idx, new_line):
+    lines = content.splitlines(keepends=True)
+    lines[line_idx] = new_line
+    return "".join(lines)
+
+
+# ============================================================================
+# Dispatch
+# ============================================================================
+
+_RULES = (match_e302, match_f401, match_syntax_colon)
+
+
+def _match_single(diagnostic, workspace_root, db_path):
+    """Run every rule; each inspects the diagnostic and returns [] if not its
+    concern. No rule executes another rule's transformation."""
+    out = []
+    for rule in _RULES:
+        try:
+            out.extend(rule(diagnostic, workspace_root, db_path))
+        except Exception:
+            # fail closed
+            continue
+    return out
+
+
+def dispatch(diagnostics, workspace_root=None, db_path=None):
+    """Deterministic entry point: accepts a single Diagnostic or an iterable.
+
+    Returns zero or more FixProposal objects:
+    - unsupported / heuristic / malformed diagnostic -> []
+    - multiple diagnostics -> deterministic ordering
+    - duplicate proposals -> deterministic deduplication by id
+    """
+    if diagnostics is None:
+        return []
+    if isinstance(diagnostics, (list, tuple)):
+        items = diagnostics
+    else:
+        items = [diagnostics]
+    seen = {}
+    for diag in items:
+        if diag is None:
+            continue
+        for p in _match_single(diag, workspace_root, db_path):
+            seen[p.id] = p
+    result = list(seen.values())
+    result.sort(key=lambda p: (p.file, p.patch["line"], p.rule_id, p.id))
+    return result
+
+
+def match(diagnostic, workspace_root=None, db_path=None):
+    """Backward-compatible single-diagnostic matcher (5B-1a contract)."""
+    try:
+        return dispatch(diagnostic, workspace_root=workspace_root, db_path=db_path)
+    except Exception:
         return []

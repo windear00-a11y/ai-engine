@@ -431,6 +431,163 @@ class DeterministicPlanner:
         }
 
 
+    def plan_fixes(self, proposals, constraints=None):
+        """Convert deterministic FixProposal[] into TaskEngine-compatible, read-only
+        planning steps. Layer 5 5B integration.
+
+        Proposal-oriented ONLY: this method never writes, edits, executes, or
+        approves an edit. Each proposal becomes an explicit planned action
+        represented as a read-only ``file.diff`` preview step (matching the
+        existing planner's diff-preview precedent), with the proposed content
+        derived deterministically by applying the proposal patches to a read-only
+        copy of the source.
+
+        The approval requirement for any FUTURE application is represented
+        explicitly on each step's inputs (``approval_required=True`` +
+        ``expected_hash`` precondition), so the plan can later be handed to the
+        approved write path (expected_hash -> permission/approval -> atomic
+        write -> checksum/journal -> rollback -> verification) without bypassing
+        it. No write/edit step is emitted here.
+
+        ``constraints`` may supply ``max_steps``/``max_duration`` (clamped
+        exactly like ``generate``) so callers can legitimately size a task.
+        A batch that would need more steps than ``max_steps`` cannot be
+        represented in one valid TaskEngine task, so it FAILS CLOSED with an
+        ``insufficient_information`` result (including proposals, details and
+        approval flag) instead of emitting a task TaskEngine would reject.
+
+        Returns the standard planner result dict. Deterministic. ``proposals``
+        may be a single FixProposal, a plain dict, or an iterable of either.
+        """
+        constraints = constraints or {}
+        try:
+            max_steps = int(constraints.get("max_steps", DEFAULT_MAX_STEPS))
+        except Exception:
+            max_steps = DEFAULT_MAX_STEPS
+        max_steps = max(1, min(100, max_steps))
+        try:
+            max_duration = int(constraints.get("max_duration", DEFAULT_MAX_DURATION))
+        except Exception:
+            max_duration = DEFAULT_MAX_DURATION
+        max_duration = max(10, min(600, max_duration))
+
+        if isinstance(proposals, dict) or hasattr(proposals, "as_dict"):
+            proposals = [proposals]
+        else:
+            proposals = list(proposals or [])
+        props = []
+        for p in proposals:
+            if hasattr(p, "as_dict") and callable(getattr(p, "as_dict")):
+                props.append(p.as_dict())
+            elif isinstance(p, dict):
+                props.append(p)
+        proposals = props
+        # Deterministic ordering by (file, line, rule_id, id)
+        proposals = sorted(proposals, key=lambda p: (p.get("file", ""),
+                                                     (p.get("patch") or {}).get("line", 0),
+                                                     p.get("rule_id", ""),
+                                                     p.get("id", "")))
+        if not proposals:
+            return _insufficient("no fix proposals to plan", [], [])
+        md = max_duration
+        task_id = stable_id("fix_plan", self.workspace_root or "",
+                            *[p.get("id", "") for p in proposals])
+        facts = []
+        heuristics = []
+        steps = []
+        # Group proposals by file for a single deterministic preview per file.
+        by_file = {}
+        for p in proposals:
+            by_file.setdefault(p.get("file", ""), []).append(p)
+        # Deterministic (file, group) sorted by file
+        groups = sorted(by_file.items())
+
+        def add_step(tool, inputs):
+            sid = stable_id(task_id, f"s{len(steps)}", tool,
+                            inputs.get("path", ""))
+            steps.append({"id": sid, "tool": tool, "inputs": inputs})
+
+        from tools.coding.fs import Workspace
+        for file_rel, group in groups:
+            abs_path = None
+            try:
+                ws = Workspace(self.workspace_root)
+                abs_path = ws.resolve(file_rel)
+                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                    current = f.read()
+            except Exception:
+                current = None
+            add_step("file.read", {"path": file_rel})
+            facts.append(f"FACT: read source of {file_rel} before applying fixes")
+            if current is None:
+                heuristics.append(f"HEURISTIC: could not read {file_rel} for preview")
+                continue
+            # Apply this file's proposals in deterministic order (cumulative)
+            proposed = current
+            ordered = group
+            for p in ordered:
+                patch = p.get("patch") or {}
+                old_text = patch.get("old_text")
+                new_text = patch.get("new_text")
+                if isinstance(old_text, str) and old_text:
+                    proposed = proposed.replace(old_text, new_text or "", 1)
+            # file.diff step carries ONLY executable inputs (path + proposed
+            # content); the CodingTools.file_diff signature rejects extra kwargs.
+            add_step("file.diff", {"path": file_rel, "proposed_content": proposed})
+            for p in ordered:
+                facts.append(
+                    f"FACT: proposal {p.get('id')} ({p.get('rule_id')}) for {file_rel}:"
+                    f"{(p.get('patch') or {}).get('line')} proposed; future apply requires approval")
+                heuristics.append(
+                    f"HEURISTIC: applying proposal {p.get('id')} requires approval; "
+                    f"this plan only previews it")
+
+        task = {
+            "id": task_id,
+            "description": f"deterministic fix plan for {len(proposals)} proposals",
+            "steps": steps,
+            "stop_on_error": True,
+            "max_steps": max_steps,
+            "max_duration": md,
+            "dry_run": False,
+        }
+        if len(steps) > max_steps:
+            # Fail closed instead of emitting a task TaskEngine would reject
+            # ("too many steps"): return a clear, deterministic result while
+            # preserving proposal metadata for caller-driven batching.
+            reason = (
+                f"too many proposals to represent in one task: "
+                f"{len(proposals)} proposals across {len(groups)} files "
+                f"need {len(steps)} steps > max_steps {max_steps}")
+            return {
+                "planner_status": "insufficient_information",
+                "reason": reason,
+                "facts": facts,
+                "heuristics": heuristics + [
+                    f"HEURISTIC: batch exceeds max_steps {max_steps}; "
+                    f"split into smaller batches or pass a higher max_steps "
+                    f"constraint"],
+                "planner_version": PLANNER_VERSION,
+                "proposals": [p.get("id") for p in proposals],
+                "proposal_details": proposals,
+                "approval_required": True,
+            }
+        intent_label = f"INTENT: apply {len(proposals)} deterministic fix proposals (preview only)"
+        return {
+            "planner_status": "ok",
+            "planner_version": PLANNER_VERSION,
+            "task": task,
+            "facts": facts,
+            "heuristics": heuristics,
+            "intent": intent_label,
+            "evidence": {"facts": facts, "heuristics": heuristics,
+                         "intent": intent_label},
+            "proposals": [p.get("id") for p in proposals],
+            "approval_required": True,
+            "proposal_details": proposals,
+        }
+
+
 def generate_plan(workspace_root, db_path=None, intent=None, target=None, error=None, constraints=None):
     """Convenience function for planner.generate."""
     planner = DeterministicPlanner(workspace_root, db_path=db_path)
