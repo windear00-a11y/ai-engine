@@ -78,6 +78,8 @@ class TaskEngine:
         self.default_max_steps = max_steps
         self.default_max_duration = max_duration
         self._current_task_id = None
+        from tools.git import GitTools
+        self.git = GitTools(workspace_root)
         self.registry = self._build_registry()
 
     def _build_registry(self):
@@ -102,6 +104,9 @@ class TaskEngine:
             "rollback.operation": self._rollback_operation,
             "rollback.confirm": self._rollback_confirm,
             "planner.generate": self._planner_generate,
+            "git.status": self.git.status,
+            "git.diff": self.git.diff,
+            "git.log": self.git.log,
         }
 
     def _planner_generate(self, intent=None, target=None, error=None,
