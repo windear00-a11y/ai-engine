@@ -220,6 +220,25 @@ class PersistentCoordinator:
         return reconcile(self.state)
 
     # ------------------------------------------------------------------ #
+    # rollback (task-level aggregation)                                  #
+    # ------------------------------------------------------------------ #
+
+    def rollback(self, task_id):
+        """Task-level rollback: undo every attached write op (reverse order)
+        and terminalize ``running -> rolled_back``. Deny-by-default, undoes
+        nothing without gate authorization."""
+        from engine.rollback import TaskRollback
+        prep = self._assert_owner(task_id)
+        if not prep["ok"]:
+            return {"ok": False, "task_id": task_id, "error": prep["error"]}
+        pp = getattr(self.engine.permissions, "path_policy", None)
+        if pp is None:
+            return {"ok": False, "task_id": task_id,
+                    "error": "coordinator has no path policy"}
+        rb = TaskRollback(pp, self.state, self.engine.permissions)
+        return rb.execute(task_id)
+
+    # ------------------------------------------------------------------ #
     # run                                                                 #
     # ------------------------------------------------------------------ #
 
