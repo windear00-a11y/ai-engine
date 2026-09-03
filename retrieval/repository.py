@@ -250,6 +250,27 @@ class KnowledgeRepository:
                  json.dumps(metadata) if metadata is not None else None),
             )
 
+    def update_node_metadata(self, node_id, metadata_merge):
+        """Merge *metadata_merge* into an existing node's metadata JSON.
+
+        Additive lifecycle extension (Phase 5): preserves all existing keys and
+        merges the new ones. Returns True if the node existed and was updated,
+        False if no such node exists (no write performed).
+        """
+        row = self.conn.execute(
+            "SELECT metadata FROM nodes WHERE id = ?", (node_id,)).fetchone()
+        if row is None:
+            return False
+        meta = json.loads(row["metadata"]) if row["metadata"] else {}
+        meta = dict(meta)
+        meta.update(metadata_merge or {})
+        with self.conn:
+            self.conn.execute(
+                "UPDATE nodes SET metadata = ? WHERE id = ?",
+                (json.dumps(meta, sort_keys=True), node_id),
+            )
+        return True
+
     def get_node(self, node_id):
         row = self.conn.execute(
             "SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()

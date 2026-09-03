@@ -1,0 +1,23 @@
+[
+  {
+    "policy_id": "risk_read_only",
+    "domain": "risk",
+    "when": {"mutation": false},
+    "effect": {"risk_level": "low"},
+    "description": "Read-only strategies are low risk"
+  },
+  {
+    "policy_id": "risk_reversible_write",
+    "domain": "risk",
+    "when": {"mutation": true, "irreversible": false},
+    "effect": {"risk_level": "medium"},
+    "description": "Reversible writes are medium risk"
+  },
+  {
+    "policy_id": "risk_irreversible",
+    "domain": "risk",
+    "when": {"irreversible": true},
+    "effect": {"risk_level": "high"},
+    "description": "Irreversible actions are high risk and blocked"
+  }
+]

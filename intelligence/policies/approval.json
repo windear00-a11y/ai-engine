@@ -1,0 +1,23 @@
+[
+  {
+    "policy_id": "approval_required_for_mutating",
+    "domain": "decide",
+    "when": {"risk_level": ["medium", "high"]},
+    "effect": {"approval_required": true},
+    "description": "Medium and high risk decisions always require human approval"
+  },
+  {
+    "policy_id": "approval_required_for_destructive_strategies",
+    "domain": "decide",
+    "when": {"risk_level": "high"},
+    "effect": {"blocked": true},
+    "description": "High risk (irreversible) strategies are never chosen by the system"
+  },
+  {
+    "policy_id": "autonomous_low_risk",
+    "domain": "decide",
+    "when": {"risk_level": "low"},
+    "effect": {"approval_required": false},
+    "description": "Read-only, low risk decisions are made autonomously"
+  }
+]

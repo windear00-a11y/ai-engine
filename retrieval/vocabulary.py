@@ -80,6 +80,20 @@ DOMAIN_RELATIONSHIP_KINDS = frozenset({
 #: Union of core + domain — the recommended vocabulary.
 ALL_RECOMMENDED_RELATIONSHIP_KINDS = CORE_RELATIONSHIP_KINDS | DOMAIN_RELATIONSHIP_KINDS
 
+#: Lifecycle relationship kinds (Phase 5). Kept as a separate namespace so the
+#: existing core/domain sets — and the tests that pin their exact membership —
+#: stay unchanged. Lifecycle edges are valid (free-form) but are not part of the
+#: ingestion-recommended vocabulary; they are emitted only by the knowledge
+#: lifecycle layer.
+LIFECYCLE_RELATIONSHIP_KINDS = frozenset({
+    "supersedes",
+    "superseded_by",
+    "invalidates",
+    "invalidated_by",
+    "updates",
+    "updated_by",
+})
+
 
 # ── Node type helpers ───────────────────────────────────────────────────────
 

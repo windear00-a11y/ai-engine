@@ -1,0 +1,16 @@
+[
+  {
+    "policy_id": "min_decision_confidence",
+    "domain": "decide",
+    "when": {"confidence": "gte_0.35"},
+    "effect": {"threshold_met": true},
+    "description": "A decision is only autonomously selected when confidence is at least 0.35"
+  },
+  {
+    "policy_id": "no_suitable_strategy_triggers_guidance",
+    "domain": "decide",
+    "when": {"no_suitable": true},
+    "effect": {"needs_guidance": true},
+    "description": "When no candidate meets the threshold, request human guidance"
+  }
+]

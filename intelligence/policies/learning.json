@@ -1,0 +1,23 @@
+[
+  {
+    "policy_id": "learning_positive_threshold",
+    "domain": "learning",
+    "when": {"adaptation_type": "increase_strategy_confidence"},
+    "effect": {"min_evidence": 2},
+    "description": "Strategy confidence increase requires M>=2 verified successes"
+  },
+  {
+    "policy_id": "learning_negative_threshold",
+    "domain": "learning",
+    "when": {"adaptation_type": "decrease_strategy_confidence"},
+    "effect": {"min_evidence": 3},
+    "description": "Negative learning requires M>=3 failures before confidence reduction"
+  },
+  {
+    "policy_id": "learning_deprecation_threshold",
+    "domain": "learning",
+    "when": {"adaptation_type": "propose_deprecation"},
+    "effect": {"min_evidence": 3, "requires_approval": true},
+    "description": "Deprecation requires M>=3 failures and human approval"
+  }
+]

@@ -1,0 +1,9 @@
+[
+  {
+    "policy_id": "context_restricted_strategy_inapplicable",
+    "domain": "context",
+    "when": {"inapplicable": true},
+    "effect": {"blocked": true},
+    "description": "A strategy restricted to other contexts is inapplicable and eliminated"
+  }
+]
