@@ -8,7 +8,7 @@ class LoopResult:
         "task_id", "context_id", "reasoning_id", "decision_id",
         "plan_id", "outcome_id", "experience_id", "learning_event_id",
         "adaptations", "ok", "errors", "fallback_used",
-        "approval_required", "status",
+        "approval_required", "status", "retrieval",
     )
 
     def __init__(self, task_id, context_id=None, reasoning_id=None,
@@ -16,7 +16,7 @@ class LoopResult:
                  experience_id=None, learning_event_id=None,
                  adaptations=None, ok=False, errors=None,
                  fallback_used=False, approval_required=False,
-                 status="completed"):
+                 status="completed", retrieval=None):
         self.task_id = task_id
         self.context_id = context_id
         self.reasoning_id = reasoning_id
@@ -31,6 +31,7 @@ class LoopResult:
         self.fallback_used = bool(fallback_used)
         self.approval_required = bool(approval_required)
         self.status = status
+        self.retrieval = dict(retrieval or {})
 
     def to_dict(self):
         return {
@@ -48,4 +49,5 @@ class LoopResult:
             "fallback_used": self.fallback_used,
             "approval_required": self.approval_required,
             "status": self.status,
+            "retrieval": self.retrieval,
         }

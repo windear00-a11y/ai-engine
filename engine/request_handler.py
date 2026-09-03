@@ -123,7 +123,7 @@ def handle_request(request_dict, workspace_root=None, stores=None,
             "intent": intent_obj,
         }
 
-    # Build Result envelope
+    # Build Result envelope (v1.1 additive retrieval)
     result = {
         "ok": bool(loop_res.ok),
         "operation": "request.execute",
@@ -143,6 +143,7 @@ def handle_request(request_dict, workspace_root=None, stores=None,
         "errors": loop_res.errors,
         "adaptations": loop_res.adaptations,
         "fallback_used": loop_res.fallback_used,
+        "retrieval": getattr(loop_res, "retrieval", {}),
     }
     # Add decision details if available
     if loop_res.decision_id and stores.get("decision_store"):

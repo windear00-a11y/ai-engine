@@ -110,15 +110,57 @@ def execute_intelligence_loop(task, workspace_root=None,
         context_id = "ctx_unknown"
         fallback_used = True
 
-    # RETRIEVE
+    # RETRIEVE (v1.1: deterministic KnowledgeClient + ranked, lifecycle/context filtered, bounded)
     knowledge = []
     experiences = []
+    retrieval = {"knowledge": [], "experience": [], "filtered": [], "ambiguous": False, "query_terms": [], "evidence_chain_id": None}
     if not fallback_used and intelligence_enabled:
         try:
-            knowledge = retrieve_knowledge(task, context_snapshot,
-                                           knowledge_nodes=knowledge_nodes)
-            experiences = retrieve_experience(task, context_snapshot,
-                                              experience_store=experience_store)
+            # If caller provided knowledge_nodes, use as-is (backward compat) but still build retrieval report
+            if knowledge_nodes is not None:
+                knowledge = list(knowledge_nodes)
+                # Build retrieval report for provided nodes (still deterministic query_terms for audit)
+                try:
+                    from engine.knowledge_retrieval import build_query_terms as _bqt
+                    _qt = _bqt({"intent": task.get("task_type") or task.get("intent") or "generic", "target": task.get("target") or {}, "error": task.get("error") or {}, "domain": task.get("domain") or ""})
+                except Exception:
+                    _qt = []
+                import hashlib, json as _json
+                _evc = "evc_" + hashlib.sha256(_json.dumps({"query_terms": _qt, "top_ids": [n.get("id") for n in knowledge[:5]]}, sort_keys=True).encode()).hexdigest()[:16] if knowledge else None
+                retrieval = {"knowledge": [{"id": n.get("id"), "score": 1.0, "raw_score": 1, "quality": 1.0, "context_match": 1.0, "lifecycle": n.get("lifecycle", {}).get("status", "active")} for n in knowledge[:5]], "filtered": [], "ambiguous": False, "query_terms": _qt, "evidence_chain_id": _evc, "candidate_count": len(knowledge)}
+                # Experience still via ranked retrieval
+                exp_res = None
+                try:
+                    from engine.experience_retrieval import retrieve_ranked_experience as _exp_ret
+                    # Build intent-like for experience
+                    intent_for_exp = {"intent": task.get("task_type") or task.get("intent") or "generic", "target": task.get("target") or {}, "error": task.get("error") or {}, "domain": task.get("domain") or ""}
+                    exp_res = _exp_ret(intent_for_exp, context_snapshot, experience_store=experience_store, max_experience=5)
+                    experiences = exp_res.get("experience", [])
+                    retrieval["experience"] = [{"experience_id": e.experience_id, "score": s, "context_match": c} for s, _, e, c, _ in exp_res.get("all_scored", [])[:5]]
+                except Exception:
+                    experiences = retrieve_experience(task, context_snapshot, experience_store=experience_store)
+            else:
+                # Deterministic KnowledgeClient retrieval via v1.1
+                from engine.knowledge_retrieval import retrieve_ranked_knowledge, build_query_terms
+                from engine.experience_retrieval import retrieve_ranked_experience
+                # Build intent object for query
+                intent_obj = {"intent": task.get("task_type") or task.get("intent") or "generic", "target": task.get("target") or {}, "error": task.get("error") or {}, "domain": task.get("domain") or ""}
+                # Knowledge
+                k_res = retrieve_ranked_knowledge(intent_obj, context_snapshot, knowledge_client=None, candidate_limit=50, max_knowledge=5)
+                knowledge = k_res.get("knowledge", [])
+                # Experience
+                e_res = retrieve_ranked_experience(intent_obj, context_snapshot, experience_store=experience_store, max_experience=5)
+                experiences = e_res.get("experience", [])
+                # Assemble retrieval audit (additive, no new DB)
+                retrieval = {
+                    "knowledge": [{"id": n.get("id"), "score": n.get("_score", {}).get("final_score"), "raw_score": n.get("_score", {}).get("raw_score"), "quality": n.get("_score", {}).get("quality"), "context_match": n.get("_score", {}).get("context_match"), "lifecycle": n.get("_score", {}).get("lifecycle"), "provenance": n.get("_provenance")} for n in knowledge],
+                    "experience": [{"experience_id": e.experience_id, "score": s, "context_match": c} for s, _, e, c, _ in e_res.get("all_scored", [])[:5]],
+                    "filtered": k_res.get("filtered", []),
+                    "ambiguous": k_res.get("ambiguous", False),
+                    "query_terms": k_res.get("query_terms", []),
+                    "evidence_chain_id": k_res.get("evidence_chain_id"),
+                    "candidate_count": k_res.get("candidate_count", 0),
+                }
         except Exception as e:
             errors.append(f"retrieve failed: {e}")
             fallback_used = True
@@ -202,6 +244,7 @@ def execute_intelligence_loop(task, workspace_root=None,
                 fallback_used=fallback_used,
                 approval_required=True,
                 status="awaiting_approval",
+                retrieval=retrieval,
             )
 
     # ACT + OBSERVE + VERIFY
@@ -480,4 +523,5 @@ def execute_intelligence_loop(task, workspace_root=None,
         fallback_used=fallback_used,
         approval_required=approval_required,
         status="completed" if ok else ("fallback" if fallback_used else "completed"),
+        retrieval=retrieval,
     )
