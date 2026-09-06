@@ -292,7 +292,7 @@ class ApprovalGate:
         return (True, d, None)
 
     def authorize_execute(self, command, args=None):
-        """Integration helper for the ExecutionRunner layer.
+        """Integration helper for command execution approval.
 
         ``command`` is the safe command string / description to approve.
         Returns ``(allowed, decision, error)``.

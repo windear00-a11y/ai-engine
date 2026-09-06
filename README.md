@@ -48,11 +48,11 @@ Installed package files are immutable. Uninstalling/reinstalling the package doe
 
 ## Vocabularies
 
-`diary_v1` (generic) and `code_v1` (optional Code domain) ship as package data inside the installed `ai_engine` package and resolve without reference to a source checkout.
+`diary_v1` (the generic vocabulary) ships as package data inside the installed `ai_engine` package and resolves without reference to a source checkout. The retired `code_v1` vocabulary is no longer shipped.
 
 ## Optional Code plugin
 
-Coding/tooling is an opt-in domain. Generic `import ai_engine` never imports it. Code plugin availability after installation depends on its modules being importable (see `ai_engine.plugins.code`).
+Coding/tooling is an opt-in domain external to this repository. Generic `import ai_engine` never imports it. Optional domains register against the generic plugin boundary (`ai_engine.plugins`, which ships empty).
 
 ## Known platform limitations
 
