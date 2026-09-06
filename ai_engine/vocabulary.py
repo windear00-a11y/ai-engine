@@ -52,7 +52,7 @@ class Vocabulary:
     """Injectable vocabulary.
 
     Fields:
-        id: str (e.g. "diary_v1", "code_v1")
+        id: str (e.g. "diary_v1")
         types: frozenset[str]
         relationship_kinds: frozenset[str]
         description, version
@@ -149,16 +149,9 @@ def list_vocabularies():
 
 # Convenience singletons (lazy)
 _DIARY_V1 = None
-_CODE_V1 = None
 
 def diary_v1():
     global _DIARY_V1
     if _DIARY_V1 is None:
         _DIARY_V1 = Vocabulary.load("diary_v1")
     return _DIARY_V1
-
-def code_v1():
-    global _CODE_V1
-    if _CODE_V1 is None:
-        _CODE_V1 = Vocabulary.load("code_v1")
-    return _CODE_V1

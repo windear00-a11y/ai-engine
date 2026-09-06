@@ -3,7 +3,7 @@
 Provides:
     Memory(project_id, data_root, vocabulary_id) -> remember() / recall()
 
-- Vocabulary is injectable (diary_v1 by default, code_v1 opt-in).
+- Vocabulary is injectable (diary_v1 by default).
 - Activity is stored in <data_root>/<project>/activity.db (NOT engine_state.db).
 - Knowledge is stored in <data_root>/<project>/knowledge.db (via KnowledgeRepository).
 - Context is stored in <data_root>/<project>/context.db (via ContextStore).
