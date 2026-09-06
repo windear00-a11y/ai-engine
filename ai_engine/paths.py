@@ -208,7 +208,7 @@ def _default_registry_data():
             {
                 "project_id": DEFAULT_PROJECT_ID,
                 "display_name": "Default",
-                "vocabulary_id": "code_v1",
+                "vocabulary_id": "diary_v1",
                 "created_at_epoch": now,
             }
         ],
@@ -288,7 +288,7 @@ def ensure_default_project(data_root=None):
             {
                 "project_id": DEFAULT_PROJECT_ID,
                 "display_name": "Default",
-                "vocabulary_id": "code_v1",
+                "vocabulary_id": "diary_v1",
                 "created_at_epoch": time.time(),
             }
         )
@@ -296,7 +296,7 @@ def ensure_default_project(data_root=None):
     return reg
 
 
-def create_project(project_id, display_name=None, vocabulary_id="code_v1", data_root=None):
+def create_project(project_id, display_name=None, vocabulary_id="diary_v1", data_root=None):
     """Create a new project entry. Fail closed if project_id already exists.
 
     Creates project directory and snapshots/backups subdirs.
