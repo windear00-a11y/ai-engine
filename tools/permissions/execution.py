@@ -1,7 +1,6 @@
 """Hardened, deterministic command execution primitives.
 
-Complements (and is used by) :class:`tools.coding.exec_tools.ExecutionRunner`
-with safety properties that the coding layer historically lacked:
+Provides safety properties for subprocess command execution:
 
 * -c / arbitrary Python arguments are denied; only closed safe forms allowed.
 * output size caps on stdout/stderr (no unbounded memory accumulation).
