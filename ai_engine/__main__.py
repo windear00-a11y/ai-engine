@@ -33,7 +33,6 @@ import argparse
 import json
 import os
 import sys
-import sqlite3
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
@@ -109,10 +108,6 @@ def cmd_remember(args):
     else:
         print(f"remembered {res['node_id']} (activity {res['activity_id']}) in project {project_id!r}")
     return 0
-
-def cmd_remember_structured(args):
-    # For testing structured payloads via CLI (not in spec but useful)
-    pass
 
 # -- recall ----------------------------------------------------------------
 def cmd_recall(args):
