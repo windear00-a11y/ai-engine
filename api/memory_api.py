@@ -5,6 +5,8 @@ project isolation via get_project_dir, vocabulary validation via Memory,
 deterministic ids via Memory, no network, no LLM.
 """
 
+import os
+
 from ai_engine.memory import Memory
 from ai_engine.paths import DEFAULT_PROJECT_ID
 
@@ -99,40 +101,45 @@ class MemoryAPI:
 
     def inspect(self, project_id=None, vocabulary_id=None):
         mem = self._memory_for(project_id, vocabulary_id)
-        # Return aggregate counts for this project
-        from ai_engine.paths import get_knowledge_db, get_context_db, get_evidence_db, get_activity_db
-        import sqlite3
         pid = project_id or DEFAULT_PROJECT_ID
         data_root = self.data_root
-        # Knowledge counts
-        kdb = get_knowledge_db(pid, data_root)
+        # Knowledge counts via Memory (never raw sqlite in the facade).
         try:
             repo_cnt = mem.count_nodes()
         except Exception:
             repo_cnt = 0
-        # Context, evidence, activity counts (best effort)
+        # Context, evidence, activity counts via store boundaries (best-effort).
+        # Read-only intent: only open a store when its per-project DB already
+        # exists, so inspecting a fresh project never creates new files.
         ctx_cnt = 0
         ev_cnt = 0
         act_cnt = 0
         try:
+            from ai_engine.paths import get_context_db, get_evidence_db, get_activity_db
             cdb = get_context_db(pid, data_root)
-            con = sqlite3.connect(f"file:{cdb}?mode=ro", uri=True)
-            ctx_cnt = con.execute("SELECT COUNT(*) FROM context_snapshots").fetchone()[0]
-            con.close()
-        except Exception:
-            pass
-        try:
+            if os.path.exists(cdb):
+                from intelligence.context.store import ContextStore
+                store = ContextStore(db_path=cdb)
+                try:
+                    ctx_cnt = store.count()
+                finally:
+                    store.close()
             edb = get_evidence_db(pid, data_root)
-            con = sqlite3.connect(f"file:{edb}?mode=ro", uri=True)
-            ev_cnt = con.execute("SELECT COUNT(*) FROM evidence").fetchone()[0]
-            con.close()
-        except Exception:
-            pass
-        try:
+            if os.path.exists(edb):
+                from intelligence.evidence.store import EvidenceStore
+                store = EvidenceStore(db_path=edb)
+                try:
+                    ev_cnt = store.count()
+                finally:
+                    store.close()
             adb = get_activity_db(pid, data_root)
-            con = sqlite3.connect(f"file:{adb}?mode=ro", uri=True)
-            act_cnt = con.execute("SELECT COUNT(*) FROM activities").fetchone()[0]
-            con.close()
+            if os.path.exists(adb):
+                from ai_engine.activity import ActivityStore
+                store = ActivityStore(project_id=pid, data_root=data_root)
+                try:
+                    act_cnt = store.count()
+                finally:
+                    store.close()
         except Exception:
             pass
         return {
