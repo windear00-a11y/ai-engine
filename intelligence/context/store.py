@@ -14,12 +14,13 @@ Persistence
     affective_json     TEXT
     temporal_json      TEXT
     captured_at_epoch  REAL
-    -- legacy columns for backward compat (if present, kept)
+    -- legacy columns for backward compat (kept for old readers only)
     system_json        TEXT
     task_json          TEXT
 
-New code writes both new and legacy columns for backward compat.
-Old DBs (with 4 columns) are migrated via ALTER TABLE ADD COLUMN.
+New code writes ONLY the generic columns; legacy ``system_json``/``task_json``
+are no longer written on new snapshots (kept for reading older rows). Old DBs
+(with 4 columns) are migrated via ALTER TABLE ADD COLUMN.
 Append-only: triggers reject UPDATE/DELETE.
 """
 
@@ -125,22 +126,18 @@ class ContextStore:
         social_json = json.dumps(snapshot.social, sort_keys=True, ensure_ascii=False)
         affective_json = json.dumps(snapshot.affective, sort_keys=True, ensure_ascii=False)
         temporal_json = json.dumps(snapshot.temporal, sort_keys=True, ensure_ascii=False, default=str)
-        # Legacy columns for backward compat readers
-        system_json = env_json
-        task_json = src_json
         try:
             with self.conn:
                 self.conn.execute(
                     "INSERT OR ignore INTO context_snapshots "
                     "(context_id, environment_json, project_json, source_json, actor_json, "
                     " spatial_json, social_json, affective_json, temporal_json, "
-                    " system_json, task_json, captured_at_epoch) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " captured_at_epoch) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (
                         snapshot.context_id,
                         env_json, proj_json, src_json, actor_json,
                         spatial_json, social_json, affective_json, temporal_json,
-                        system_json, task_json,
                         snapshot.captured_at_epoch,
                     ),
                 )
