@@ -20,7 +20,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from tools.permissions import Policy
 from tools.permissions.execution import run_checked, check_args, CommandDenied, DEFAULT_MEMORY_LIMIT_MB
-from tools.coding.exec_tools import ExecutionRunner
 
 
 def _policy():
@@ -164,7 +163,7 @@ class Slice4D1ExistingBoundaryTests(unittest.TestCase):
         pol = _policy()
         root = tempfile.mkdtemp()
         self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
-        r = run_checked(pol, "python", ["-m", "compileall", "."], lambda p: True, cwd=root, timeout_ms=5)
+        r = run_checked(pol, "python", ["-m", "compileall"], lambda p: True, cwd=root, timeout_ms=5)
         self.assertTrue(r["timed_out"])
 
     def test_output_cap_still(self):
@@ -176,7 +175,7 @@ class Slice4D1ExistingBoundaryTests(unittest.TestCase):
             with open(os.path.join(many, f"f{i}.py"), "w") as f:
                 f.write("x = %d\n" % i)
         self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
-        r = run_checked(pol, "python", ["-m", "compileall", "many"], lambda p: True, cwd=root, stdout_limit=120)
+        r = run_checked(pol, "python", ["-m", "compileall"], lambda p: True, cwd=root, stdout_limit=120)
         self.assertIn("truncated", (r["stdout"] or "").lower() + (r["stderr"] or "").lower() + (r["error"] or "").lower() or r["stdout"])
 
     def test_shell_path_approval_remain(self):
@@ -184,25 +183,29 @@ class Slice4D1ExistingBoundaryTests(unittest.TestCase):
         # shell/chaining denied via exact form mismatch
         with self.assertRaises(CommandDenied):
             check_args(pol, "npm", ["test", ";", "ls"])
-        # path denied
+        # path denied via workspace cwd confinement in the generic runner
         import tempfile
         root = tempfile.mkdtemp()
         self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
-        runner = ExecutionRunner(root, policy=pol, approver=lambda p: True)
-        r = runner.run("npm", ["test"], cwd="../escape")
+        r = run_checked(pol, "npm", ["test"], lambda p: True, cwd="../escape",
+                        workspace_root=root)
         self.assertIn("denied", (r["error"] or "").lower())
         # python -c still denied
         with self.assertRaises(CommandDenied):
             check_args(pol, "python", ["-c", "print(1)"])
 
     def test_no_new_args_any(self):
-        wl = ExecutionRunner._default_allowlist()
-        for name in ("flake8", "ruff", "black", "isort", "npm", "pip"):
-            self.assertNotEqual(wl[name]["args"], "any", name)
-        # pip should be exact, not any
-        self.assertEqual(wl["pip"]["args"], ["list", "freeze", "check"])
-        # python still any (legacy, not changed)
-        self.assertEqual(wl["python"]["args"], "any")
+        # Policy command specs are the single source of truth; no wildcard
+        # "any" forms and every allowed command has closed exact arg forms.
+        pol = _policy()
+        for name in ("flake8", "ruff", "black", "isort", "npm", "pip",
+                     "python", "python3"):
+            spec = pol.command_spec(name) or {}
+            forms = spec.get("forms") or []
+            self.assertTrue(forms, name)
+            for f in forms:
+                self.assertNotEqual(f.get("args"), "any", name)
+                self.assertIsNotNone(f.get("args"), name)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,9 @@
+{
+  "id": "read-transport",
+  "name": "ReadTransport",
+  "type": "entity",
+  "description": "Concrete read transport instance.",
+  "relationships": [
+    { "type": "instance_of", "target": "transport-component", "label": "implements" }
+  ]
+}

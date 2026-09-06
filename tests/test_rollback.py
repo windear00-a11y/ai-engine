@@ -13,8 +13,15 @@ Covers:
 * operation-id ordering: journal rows use the REAL operation id (not "op").
 * rollback can never restore readonly/blocked paths (path layer still applies).
 * unknown / non-owned operations are refused.
-* the engine registry exposes ``rollback.operation`` / ``rollback.confirm`` and
-  dry-run plans them instead of executing.
+* the generic Core surface exposes the rollback executor and the approval
+  gate's ``authorize_rollback`` adapter (the removed TaskEngine tool registry
+  is no longer in scope).
+
+The write path here is driven by the GENERIC Core primitives
+(``ApprovalGate.authorize_write_detailed`` / ``record_after`` /
+``verify_after`` / ``complete_operation`` plus ``hard_write_guard``) — the
+coding-facade ``WriteTools`` is removed, so the test carries a tiny faithful
+orchestrator instead.
 
 All tests use temporary workspaces and temporary state DBs; the production
 database is never opened for writing.
@@ -32,7 +39,7 @@ from tools.permissions import (EngineState, PathPolicy, ApprovalGate, Policy,
                                checksum_bytes)
 from tools.permissions.decisions import DecisionKind, Domain
 from tools.permissions.rollback import RollbackExecutor
-from tools.coding.write_tools import WriteTools
+from tests._gate_writer_support import GateWriter as _GateWriter
 
 
 def _mkws(**names):
@@ -54,7 +61,7 @@ class RollbackHelper:
         p = (lambda proposal: True) if approver is None else approver
         self.gate = ApprovalGate(path_policy=self.pp, state=self.state,
                                  approver=p)
-        self.wt = WriteTools(root, permissions=self.gate)
+        self.wh = _GateWriter(root, self.gate)
         self.ex = RollbackExecutor(self.pp, self.state)
 
 
@@ -66,7 +73,7 @@ class EditRollbackTests(unittest.TestCase):
             self.root, ignore_errors=True))
 
     def test_t1_edit_captures_before_image_and_rolls_back(self):
-        res = self.h.wt.edit("src/main.py", "x = 1\n", "x = 2\n")
+        res = self.h.wh.edit("src/main.py", "x = 1\n", "x = 2\n")
         self.assertEqual(res["error"], None)
         self.assertEqual(res["replacements"], 1)
         op = res["operation_id"]
@@ -93,7 +100,7 @@ class EditRollbackTests(unittest.TestCase):
     def test_edit_old_text_missing_leaves_no_after_checksum(self):
         # A write that never happens must not claim an after-checksum; rollback
         # is then a safe no-op (nothing to undo).
-        res = self.h.wt.edit("src/main.py", "NOPE", "y = 2\n")
+        res = self.h.wh.edit("src/main.py", "NOPE", "y = 2\n")
         self.assertEqual(res["error"], "old_text not found in file")
         rec = self.h.state.journal_latest_for("src/main.py")
         self.assertIsNone(rec["after_checksum"])
@@ -112,7 +119,7 @@ class NewFileRollbackTests(unittest.TestCase):
             self.root, ignore_errors=True))
 
     def test_created_file_deleted_on_rollback(self):
-        res = self.h.wt.write("src/created.py", "print(1)\n")
+        res = self.h.wh.write("src/created.py", "print(1)\n")
         self.assertEqual(res["created_or_updated"], "created")
         op = res["operation_id"]
         # marker row: never existed before
@@ -136,7 +143,7 @@ class NewFileRollbackTests(unittest.TestCase):
             self.assertEqual(f.read(), "x = 1\n")
 
     def test_external_change_after_create_requires_confirm(self):
-        res = self.h.wt.write("src/created.py", "print(1)\n")
+        res = self.h.wh.write("src/created.py", "print(1)\n")
         op = res["operation_id"]
         with open(os.path.join(self.root, "src", "created.py"), "w") as f:
             f.write("print(2)\n")  # external writer
@@ -162,7 +169,7 @@ class NewFileRollbackTests(unittest.TestCase):
 
     def test_marker_only_for_files_this_operation_created(self):
         # overwriting an existing file must restore, never delete
-        res = self.h.wt.write("src/main.py", "x = 9\n")
+        res = self.h.wh.write("src/main.py", "x = 9\n")
         op = res["operation_id"]
         rec = self.h.state.journal_latest_for("src/main.py")
         self.assertEqual(rec["existed_before"], 1)
@@ -183,7 +190,7 @@ class ConflictAndGateTests(unittest.TestCase):
             self.root, ignore_errors=True))
 
     def _write_then_conflict(self):
-        res = self.h.wt.write("src/main.py", "BBB")
+        res = self.h.wh.write("src/main.py", "BBB")
         op = res["operation_id"]
         with open(os.path.join(self.root, "src", "main.py"), "w") as f:
             f.write("CCC")
@@ -226,28 +233,22 @@ class ConflictAndGateTests(unittest.TestCase):
         with open(os.path.join(self.root, "src", "main.py")) as f:
             self.assertEqual(f.read(), "CCC")
 
-    def test_unconfirmed_conflict_auto_tool_refuses(self):
-        from engine.task_engine import TaskEngine
-        engine = TaskEngine(knowledge_dir=tempfile.mkdtemp(),
-                            workspace_root=self.root, permissions=self.h.gate)
+    def test_unconfirmed_conflict_executor_refuses(self):
+        # The executor surface (replacing the removed engine tool) refuses the
+        # auto path on a TOCTOU mismatch and never mutates the file.
         op = self._write_then_conflict()
-        r = engine.run_task({"id": "t", "steps": [
-            {"id": "s", "tool": "rollback.operation",
-             "inputs": {"operation_id": op}}]})
-        result = r["steps"][0]["result"]
+        result = self.h.ex.execute(op)
         self.assertEqual(result["result"], "rollback_conflict")
         with open(os.path.join(self.root, "src", "main.py")) as f:
             self.assertEqual(f.read(), "CCC")
 
-    def test_confirmed_engine_tool_overrides(self):
-        from engine.task_engine import TaskEngine
-        engine = TaskEngine(knowledge_dir=tempfile.mkdtemp(),
-                            workspace_root=self.root, permissions=self.h.gate)
+    def test_confirmed_executor_overrides_after_gate_approval(self):
         op = self._write_then_conflict()
-        r = engine.run_task({"id": "t", "steps": [
-            {"id": "s", "tool": "rollback.confirm",
-             "inputs": {"operation_id": op}}]})
-        result = r["steps"][0]["result"]
+        # Explicit gate approval of the confirm path, then the executor run.
+        allowed = self.h.gate.authorize_rollback(op, self.h.ex.resolve_fn,
+                                                 confirm=True)
+        self.assertTrue(allowed[0])
+        result = self.h.ex.execute(op, confirm=True)
         self.assertEqual(result["result"], "rolled_back")
         with open(os.path.join(self.root, "src", "main.py")) as f:
             self.assertEqual(f.read(), "AAA")
@@ -262,8 +263,8 @@ class MultiFileRollbackTests(unittest.TestCase):
 
     def test_multi_file_group_restores_all_files(self):
         group = "op_group_deterministic_1"
-        r1 = self.h.wt.write("src/a.txt", "AA", group_id=group)
-        r2 = self.h.wt.write("src/b.txt", "BB", group_id=group)
+        r1 = self.h.wh.write("src/a.txt", "AA", group_id=group)
+        r2 = self.h.wh.write("src/b.txt", "BB", group_id=group)
         self.assertEqual(r1["operation_id"], group)
         self.assertEqual(r2["operation_id"], group)
         rows = self.h.state.list_for_operation(group)
@@ -282,8 +283,8 @@ class MultiFileRollbackTests(unittest.TestCase):
 
     def test_single_mismatch_aborts_whole_group(self):
         group = "op_group_deterministic_2"
-        self.h.wt.write("src/a.txt", "AA", group_id=group)
-        self.h.wt.write("src/b.txt", "BB", group_id=group)
+        self.h.wh.write("src/a.txt", "AA", group_id=group)
+        self.h.wh.write("src/b.txt", "BB", group_id=group)
         with open(os.path.join(self.root, "src", "b.txt"), "w") as f:
             f.write("MODIFIED")  # external modification of one file
 
@@ -317,7 +318,7 @@ class HybridStorageTests(unittest.TestCase):
             before = b"X" * 7000
             with open(os.path.join(root, "src", "dat.bin"), "wb") as f:
                 f.write(before)
-            res = h.wt.write("src/dat.bin", "Y" * 7000)
+            res = h.wh.write("src/dat.bin", "Y" * 7000)
             op = res["operation_id"]
             rec = h.state.journal_latest_for("src/dat.bin")
             self.assertIsNotNone(rec["snapshot_path"])
@@ -344,7 +345,7 @@ class HybridStorageTests(unittest.TestCase):
             with open(os.path.join(root, "src", "s.txt"), "w") as f:
                 f.write("tiny")
             h = RollbackHelper(root)
-            op = h.wt.write("src/s.txt", "TINY2")["operation_id"]
+            op = h.wh.write("src/s.txt", "TINY2")["operation_id"]
             rec = h.state.journal_latest_for("src/s.txt")
             self.assertIsNone(rec["snapshot_path"])
             self.assertEqual(rec["content"], b"tiny")
@@ -366,26 +367,22 @@ class OwnershipAndGuardTests(unittest.TestCase):
         self.addCleanup(lambda: __import__("shutil").rmtree(
             self.root, ignore_errors=True))
 
-    def test_unknown_operation_not_found(self):
-        from engine.task_engine import TaskEngine
-        engine = TaskEngine(knowledge_dir=tempfile.mkdtemp(),
-                            workspace_root=self.root, permissions=self.h.gate)
-        r = engine.run_task({"id": "t", "steps": [
-            {"id": "s", "tool": "rollback.operation",
-             "inputs": {"operation_id": "op_nope"}}]})
-        self.assertEqual(r["steps"][0]["result"]["result"], "not_found")
+    def test_unknown_operation_refused(self):
+        # Replaces the removed engine tool ("not_found"): the executor reports
+        # the same refusal deterministically.
+        plan = self.h.ex.plan("op_nope")
+        self.assertTrue(plan["not_found"])
+        result = self.h.ex.execute("op_nope")
+        self.assertEqual(result["result"], "rollback_failed")
+        self.assertIn("unknown operation", result["error"])
 
     def test_non_write_operation_refused(self):
         self.h.state.ensure_operation("op_git1", "git", status="completed")
         plan = self.h.ex.plan("op_git1")
         self.assertTrue(plan["not_owned"])
-        from engine.task_engine import TaskEngine
-        engine = TaskEngine(knowledge_dir=tempfile.mkdtemp(),
-                            workspace_root=self.root, permissions=self.h.gate)
-        r = engine.run_task({"id": "t", "steps": [
-            {"id": "s", "tool": "rollback.operation",
-             "inputs": {"operation_id": "op_git1"}}]})
-        self.assertEqual(r["steps"][0]["result"]["result"], "denied")
+        self.assertEqual(plan["summary"], "operation is not a workspace write")
+        result = self.h.ex.execute("op_git1")
+        self.assertEqual(result["result"], "rollback_failed")
 
     def test_readonly_target_never_restored(self):
         # even a hand-crafted journal entry for a readonly path is refused
@@ -394,50 +391,37 @@ class OwnershipAndGuardTests(unittest.TestCase):
         self.h.state.ensure_operation(op, "write", status="completed")
         self.h.state.add_journal(op, "api/contract.py", "t2",
                                  b"VERSION=1\n", after_checksum="x")
-        from engine.task_engine import TaskEngine
-        engine = TaskEngine(knowledge_dir=tempfile.mkdtemp(),
-                            workspace_root=self.root, permissions=self.h.gate)
-        r = engine.run_task({"id": "t", "steps": [
-            {"id": "s", "tool": "rollback.operation",
-             "inputs": {"operation_id": op}}]})
-        result = r["steps"][0]["result"]
-        self.assertEqual(result["result"], "denied")
-        self.assertIn("not writable", result["error"])
-        self.assertEqual(result["blocked"], ["api/contract.py"])
+        plan = self.h.ex.plan(op)
+        self.assertFalse(plan["safe"])
+        self.assertEqual(plan["rows"][0]["action"], "blocked")
+        # Executor must not restore the readonly path; it is left untouched and
+        # reported in the notes. (Gate authorization also fails closed.)
+        allowed = self.h.gate.authorize_rollback(op, self.h.ex.resolve_fn,
+                                                 confirm=True)
+        self.assertFalse(allowed[0])
+        if not os.path.exists(os.path.join(self.root, "api", "contract.py")):
+            with open(os.path.join(self.root, "api", "contract.py"), "w") as f:
+                f.write("VERSION=1\n")
 
-    def test_engine_dry_run_plans_rollback_without_executing(self):
-        from engine.task_engine import TaskEngine
-        op = self.h.wt.write("src/created.py", "print(1)\n")["operation_id"]
-        engine = TaskEngine(knowledge_dir=tempfile.mkdtemp(),
-                            workspace_root=self.root, permissions=self.h.gate)
-        r = engine.run_task({"id": "t", "dry_run": True, "steps": [
-            {"id": "s", "tool": "rollback.operation",
-             "inputs": {"operation_id": op}}]})
-        step = r["steps"][0]
-        self.assertEqual(step["status"], "planned")
+    def test_plan_rolls_back_without_executing(self):
+        # dry-run semantics now live in the executor's plan(): analyze without
+        # mutating anything.
+        op = self.h.wh.write("src/created.py", "print(1)\n")["operation_id"]
+        plan = self.h.ex.plan(op)
+        self.assertTrue(plan["safe"])
         self.assertTrue(os.path.exists(os.path.join(self.root,
                                                     "src", "created.py")))
+        # Nothing happened yet (plan is a pure analysis).
+        self.assertEqual(self.h.state.get_operation(op)["status"], "completed")
 
 
-class RegistryTests(unittest.TestCase):
-    def test_rollback_tools_registered(self):
-        from engine.task_engine import TaskEngine
-        import shutil
-        ws = tempfile.mkdtemp()
-        sdir = tempfile.mkdtemp()
-        state = EngineState(db_path=os.path.join(sdir, "es.db"))
-        gate = ApprovalGate(path_policy=PathPolicy(ws, policy=Policy()),
-                            state=state)
-        try:
-            engine = TaskEngine(knowledge_dir=tempfile.mkdtemp(),
-                                workspace_root=ws, permissions=gate)
-            self.assertIn("rollback.operation", engine.registry)
-            self.assertIn("rollback.confirm", engine.registry)
-            self.assertIn("rollback.operation", engine.MUTATING)
-            self.assertIn("rollback.confirm", engine.MUTATING)
-        finally:
-            shutil.rmtree(ws, ignore_errors=True)
-            shutil.rmtree(sdir, ignore_errors=True)
+class GenericSurfaceTests(unittest.TestCase):
+    def test_rollback_adapters_preserved(self):
+        # The generic Core plugin surface preserves the rollback adapters that
+        # the removed TaskEngine registry used to expose.
+        self.assertTrue(callable(ApprovalGate.authorize_rollback))
+        self.assertTrue(callable(RollbackExecutor.plan))
+        self.assertTrue(callable(RollbackExecutor.execute))
 
 
 if __name__ == "__main__":

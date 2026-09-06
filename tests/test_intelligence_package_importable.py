@@ -44,11 +44,11 @@ class IntelligencePackageImportableTests(unittest.TestCase):
             e for e in os.listdir(package_dir)
             if not e.endswith((".pyc", ".pyo")) and e != "__pycache__"
         )
-        # Phase 10 adds the api subpackage.
+        # Phase 10 adds the api subpackage; Phase 26 adds lifecycle.
         self.assertEqual(entries, ["__init__.py", "api", "context", "decision",
                                    "evidence", "experience", "knowledge",
-                                   "learning", "loop", "outcome", "policies",
-                                   "reasoning", "strategy"])
+                                   "learning", "lifecycle", "loop", "outcome",
+                                   "policies", "reasoning", "strategy"])
 
 
 if __name__ == "__main__":

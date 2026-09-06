@@ -117,6 +117,13 @@ def check_args(policy, name, args):
                 "py_compile requires exactly one path argument")
         if not valid_py_compile_path(rest[0]):
             raise CommandDenied("py_compile path invalid")
+    elif module in ("unittest", "compileall"):
+        # Policy declares the exact closed forms ["-m", "unittest"] and
+        # ["-m", "compileall"] (no additional arguments). Any extra args
+        # could reach attacker-controlled files, so they are denied.
+        if len(args) != 2:
+            raise CommandDenied(
+                f"python -m {module} requires exactly the closed form")
     return {"name": name, "args": args, "form": f"-m {module}"}
 
 
@@ -250,18 +257,47 @@ def _terminate_group(proc):
 def run_checked(policy, name, args, approval_of, cwd=None,
                 timeout_ms=None, stdout_limit=None, stderr_limit=None,
                 memory_limit_mb=None,
-                environ=None, strip_patterns=None, executable=None):
+                environ=None, strip_patterns=None, executable=None,
+                workspace_root=None):
     """Run a validated command under the hardened execution policy.
 
-    Returns a result dict shaped like the coding layer's ``ExecutionRunner``:
+    Returns a result dict shaped like the legacy ``ExecutionRunner``:
     ``{command, executable, cwd, exit_code, stdout, stderr, duration,
     timed_out, success, error}``.
 
     ``approval_of`` is a callable ``(proposed_dict) -> bool`` that provides
     explicit approval for the EXECUTE domain. There is no auto-approve; launch
     only happens after approval.
+
+    ``workspace_root`` (optional) confines ``cwd`` to the given root: a
+    relative ``cwd`` is resolved inside it and an escaping/absolute ``cwd``
+    is rejected before launch. When omitted, ``cwd`` is used as-is (no
+    confinement) for backward compatibility.
     """
     args = list(args)
+    if workspace_root is not None:
+        try:
+            from tools.permissions.fs import Workspace, PathError
+        except Exception:  # pragma: no cover - defensive
+            Workspace = PathError = None
+        if Workspace is not None:
+            try:
+                ws = Workspace(workspace_root)
+            except PathError as e:
+                return {"command": " ".join([name] + args), "executable": name,
+                        "cwd": cwd, "exit_code": None, "stdout": "", "stderr": "",
+                        "duration": None, "timed_out": False, "success": False,
+                        "error": str(e)}
+            if cwd is None:
+                cwd = ws.root
+            else:
+                try:
+                    cwd = ws.resolve(cwd)
+                except PathError as e:
+                    return {"command": " ".join([name] + args), "executable": name,
+                            "cwd": cwd, "exit_code": None, "stdout": "", "stderr": "",
+                            "duration": None, "timed_out": False, "success": False,
+                            "error": f"cwd path denied: {e}"}
     try:
         form = check_args(policy, name, args)
     except CommandDenied as e:

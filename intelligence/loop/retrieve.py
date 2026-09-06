@@ -1,4 +1,9 @@
-"""Retrieval for the loop: knowledge + experience (RETRIEVE) (Phase 9)."""
+"""Retrieval for the loop: knowledge + experience (RETRIEVE) (Phase 9).
+
+Generic Persistent Intelligence Core retrieval only. Ranked knowledge and
+ranked experience live in :mod:`retrieval.ranked_knowledge` and
+:mod:`retrieval.ranked_experience`. No domain import is reachable from here.
+"""
 
 
 def retrieve_knowledge(task, context_snapshot, knowledge_nodes=None, knowledge_client=None):
@@ -6,8 +11,8 @@ def retrieve_knowledge(task, context_snapshot, knowledge_nodes=None, knowledge_c
 
     If ``knowledge_nodes`` is supplied, it is returned as-is (caller-provided,
     deterministic, backward compatible). Otherwise performs deterministic
-    KnowledgeClient query derived from StructuredIntent/task (v1.1).
-    Uses only KnowledgeClient abstraction, never SQL.
+    ranked retrieval derived from StructuredIntent/task (v1.1).
+    Uses only the KnowledgeClient abstraction, never SQL.
     """
     if knowledge_nodes is not None:
         return list(knowledge_nodes)
@@ -22,7 +27,7 @@ def retrieve_knowledge(task, context_snapshot, knowledge_nodes=None, knowledge_c
     if isinstance(intent_obj["target"], dict) and "error" in intent_obj["target"] and not intent_obj["error"]:
         intent_obj["error"] = {"message": intent_obj["target"].get("error")}
     try:
-        from engine.knowledge_retrieval import retrieve_ranked_knowledge
+        from retrieval.ranked_knowledge import retrieve_ranked_knowledge
         res = retrieve_ranked_knowledge(intent_obj, context_snapshot, knowledge_client=knowledge_client, candidate_limit=50, max_knowledge=5)
         # Return only the top nodes; filtered/ambiguous are for audit via separate call
         return res.get("knowledge", [])
@@ -40,7 +45,7 @@ def retrieve_experience(task, context_snapshot, experience_store=None):
         "domain": task.get("domain") or "",
     }
     try:
-        from engine.experience_retrieval import retrieve_ranked_experience
+        from retrieval.ranked_experience import retrieve_ranked_experience
         res = retrieve_ranked_experience(intent_obj, context_snapshot, experience_store=experience_store, max_experience=5)
         return res.get("experience", [])
     except Exception:

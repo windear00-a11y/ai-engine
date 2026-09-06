@@ -13,7 +13,7 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__),
                                                 "..")))
 
-from tools.coding.fs import PathError
+from tools.permissions.fs import PathError
 from tools.permissions import PathPolicy
 from tools.permissions.pathpolicy import hard_write_guard, Zone
 from tools.permissions.decisions import DecisionKind

@@ -1,0 +1,11 @@
+{
+  "id": "transport",
+  "name": "Transport",
+  "type": "technology",
+  "category": "infrastructure",
+  "description": "A generic message transport layer.",
+  "relationships": [
+    { "type": "depends_on", "target": "read-transport", "label": "uses for reads" },
+    { "type": "related_to", "target": "transport-api", "label": "exposes API" }
+  ]
+}

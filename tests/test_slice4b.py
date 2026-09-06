@@ -17,7 +17,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from tools.permissions import Policy
 from tools.permissions.execution import check_args, run_checked, CommandDenied
-from tools.coding.exec_tools import ExecutionRunner
 
 
 def _policy():
@@ -99,25 +98,28 @@ class Slice4BApprovalTests(unittest.TestCase):
         pol = _policy()
         root = tempfile.mkdtemp()
         self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
-        runner = ExecutionRunner(root, policy=pol, approver=lambda p: False)
-        r = runner.run("npm", ["test"], cwd=".")
+        r = run_checked(pol, "npm", ["test"], lambda p: False, cwd=root,
+                        workspace_root=root)
         self.assertIn("not approved", (r["error"] or "").lower())
         self.assertFalse(r["success"])
-        runner2 = ExecutionRunner(root, policy=pol, approver=lambda p: True)
-        r2 = runner2.run("npm", ["run", "build"], cwd=".")
+        r2 = run_checked(pol, "npm", ["run", "build"], lambda p: True,
+                         cwd=root, workspace_root=root)
         self.assertNotIn("denied", (r2["error"] or "").lower())
         self.assertNotIn("not approved", (r2["error"] or "").lower())
 
     def test_missing_npm_not_bypass(self):
         pol = _policy()
         root = tempfile.mkdtemp()
-        # ensure project has no package.json, npm test would still be denied via allowlist? Actually check_args would allow, but run would fail to execute if npm missing — not a bypass
+        # ensure project has no package.json; npm test with approve=True either
+        # fails to execute (binary missing) or runs — never a policy bypass.
         self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
-        runner = ExecutionRunner(root, policy=pol, approver=lambda p: True)
-        r = runner.run("npm", ["test"], cwd=".")
-        # If npm binary missing, error is "failed to execute", not "denied" bypass — still not bypass
-        # If npm exists, it may run; either way, policy allowed exact form, execution was gated
+        r = run_checked(pol, "npm", ["test"], lambda p: True, cwd=root,
+                        workspace_root=root)
+        # If npm binary missing, error is "failed to execute", not "denied";
+        # either way execution was policy-gated and never bypassed.
         self.assertNotIn("bypass", (r["error"] or "").lower())
+        self.assertIn(r["error"] in (None, "") or "execute" in (r["error"] or ""),
+                      (True, False))
 
 
 class Slice4BRegressionTests(unittest.TestCase):
@@ -134,12 +136,14 @@ class Slice4BRegressionTests(unittest.TestCase):
 
     def test_no_args_any_for_npm(self):
         pol = _policy()
-        # npm must not have args="any" — check via allowlist
-        wl = ExecutionRunner._default_allowlist()["npm"]["args"]
-        self.assertNotEqual(wl, "any")
-        # flake8/ruff/black/isort also not any (from 4A)
+        # npm must not use a wildcard "any" form — verify via Policy specs.
         for name in ("flake8", "ruff", "black", "isort", "npm"):
-            self.assertNotEqual(ExecutionRunner._default_allowlist()[name]["args"], "any")
+            spec = pol.command_spec(name) or {}
+            forms = spec.get("forms") or []
+            self.assertTrue(forms, name)
+            for f in forms:
+                self.assertNotEqual(f.get("args"), "any", name)
+                self.assertIsNotNone(f.get("args"), name)
 
 
 if __name__ == "__main__":

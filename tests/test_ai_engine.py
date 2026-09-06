@@ -22,12 +22,10 @@ if _ROOT not in sys.path:
 
 from retrieval.repository import KnowledgeRepository
 
-from ai_engine.__main__ import (
-    DEFAULT_SEARCH_LIMIT,
-    MAX_SEARCH_LIMIT,
-    _MAX_VERBOSE_BYTES,
-    _VERBOSE_FIELD_CAP,
-)
+# CLI search defaults (Phase 24: inlined in ai_engine.__main__._search_limit).
+DEFAULT_SEARCH_LIMIT = 20
+MAX_SEARCH_LIMIT = 100
+_MAX_VERBOSE_BYTES = 16384
 
 
 def _seed_file_db(db_path):
@@ -115,8 +113,8 @@ class CLITests(unittest.TestCase):
     def test_help_lists_all_commands(self):
         r = self.run_cli("--help")
         self.assertEqual(r.returncode, 0, r.stderr)
-        for cmd in ("search", "get", "related", "follow",
-                    "provenance", "inspect"):
+        for cmd in ("init", "remember", "recall", "get", "provenance",
+                    "inspect", "context", "serve", "backup", "restore"):
             self.assertIn(cmd, r.stdout)
 
     def test_inspect_json(self):
@@ -358,6 +356,8 @@ class SearchSafetyTests(unittest.TestCase):
             tmp.cleanup()
 
     def test_verbose_mode_bounded(self):
+        # Phase 24: the legacy ``--verbose`` flag is accepted for compat but the
+        # CLI returns compact, bounded, machine-readable JSON in both modes.
         tmp = tempfile.TemporaryDirectory()
         db = os.path.join(tmp.name, "knowledge.db")
         _seed_regression_db(db)
@@ -373,14 +373,21 @@ class SearchSafetyTests(unittest.TestCase):
         finally:
             tmp.cleanup()
 
-    def test_verbose_contains_full_fields(self):
-        tmp, db = _temp_db()
+    def test_get_still_returns_full_information(self):
+        # Full-information access is provided by ``get`` (compact search
+        # output never dumps large evidence blobs).
+        tmp = tempfile.TemporaryDirectory()
+        db = os.path.join(tmp.name, "knowledge.db")
+        _seed_regression_db(db)
         try:
-            r = _run_cli("search", "exception", "--verbose", "--db", db)
+            r = _run_cli("get", "regression-large-evidence", "--db", db)
             self.assertEqual(r.returncode, 0, r.stderr)
             data = json.loads(r.stdout)
-            self.assertTrue(any("description" in n for n in data))
-            self.assertTrue(any("source_id" in n for n in data))
+            self.assertEqual(data["id"], "regression-large-evidence")
+            self.assertIn("evidence_references", data)
+            self.assertGreater(len(data["evidence_references"][0]["evidence"]),
+                               1_000_000)
+            self.assertGreater(len(data["description"]), 1_000_000)
         finally:
             tmp.cleanup()
 

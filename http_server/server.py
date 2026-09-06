@@ -33,7 +33,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from api.contract import CONTRACT_VERSION
+from api.contract_v2 import CONTRACT_VERSION as V2_CONTRACT_VERSION
 from api.tools import ToolInterface
+from api.memory_tools import MemoryToolInterface
 from retrieval.repository import DEFAULT_KNOWLEDGE_DB
 
 __all__ = [
@@ -65,14 +67,19 @@ HTTP_STATUS_FOR_CODE = {
 DEFAULT_STATUS = 500  # fallback for unexpected codes (still structured JSON)
 
 
-def _single_env(code, message, operation=None):
+def _single_env(code, message, operation=None, contract_version=None):
     """Build a contract-shaped error envelope without touching the engine."""
+    cv = contract_version or CONTRACT_VERSION
     return {
         "ok": False,
         "operation": operation,
-        "contract_version": CONTRACT_VERSION,
+        "contract_version": cv,
         "error": {"code": code, "message": message},
     }
+
+
+def _single_env_v2(code, message, operation=None):
+    return _single_env(code, message, operation, contract_version=V2_CONTRACT_VERSION)
 
 
 class _CountingFactory:
@@ -93,6 +100,7 @@ class KnowledgeHTTPServer(ThreadingHTTPServer):
     Each incoming request is handled in its own daemon thread.  The
     repository/API is loaded on the first ``/v1/execute`` request and reused
     for every subsequent request; it is never reloaded per request.
+    For v2, a separate Memory interface is loaded lazily on first ``/v2/execute``.
 
     Structured JSON request logs are written to stderr (one line per completed
     request).  ``GET /health`` returns live server metrics.
@@ -102,26 +110,37 @@ class KnowledgeHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, addr, db_path=DEFAULT_KNOWLEDGE_DB, api_key=None,
-                 max_body_bytes=MAX_BODY_BYTES, interface_factory=None):
+                 max_body_bytes=MAX_BODY_BYTES, interface_factory=None,
+                 data_root=None, memory_interface_factory=None):
         self.db_path = db_path
         self.api_key = api_key
         self.max_body_bytes = max_body_bytes
+        self.data_root = data_root
         # interface_factory(db) -> object with .execute(dict) and .close().
         # Tests inject a counting factory to prove initialization happens once.
         self._factory = interface_factory or self._make_thread_safe_factory()
         self._interface = None
         self._load_failed = False
+        # v2 memory interface (lazy)
+        self._memory_factory = memory_interface_factory or self._make_memory_factory()
+        self._memory_interface = None
+        self._memory_load_failed = False
         self._closing = False
         self._stats_written = False
         self._serving_thread = None
         self._stats_lock = threading.Lock()
         self._init_lock = threading.Lock()
         self._execute_lock = threading.Lock()
+        self._memory_init_lock = threading.Lock()
+        self._memory_execute_lock = threading.Lock()
         self._start_time = time.monotonic()
         self.stats = {
             "requests": 0,          # POST /v1/execute requests processed
+            "v2_requests": 0,        # POST /v2/execute
             "initializations": 0,   # times the repository was loaded
+            "v2_initializations": 0,
             "load_seconds": None,   # wall time of the (single) repository load
+            "v2_load_seconds": None,
         }
         super().__init__(addr, V1Handler)
 
@@ -142,6 +161,13 @@ class KnowledgeHTTPServer(ThreadingHTTPServer):
             api = KnowledgeAPI(db_path=None, store=store)
             return ToolInterface(api=api)
 
+        return factory
+
+    @staticmethod
+    def _make_memory_factory():
+        """Factory for v2 Memory interface (per-project, thread-safe not needed as it creates new Memory per request)."""
+        def factory(data_root):
+            return MemoryToolInterface(data_root=data_root)
         return factory
 
     # -- engine lifecycle (lazy, single load) ------------------------------
@@ -185,20 +211,59 @@ class KnowledgeHTTPServer(ThreadingHTTPServer):
         with self._execute_lock:
             return interface.execute(request)
 
+    # -- v2 memory engine (lazy, additive) ---------------------------------
+    def _ensure_memory_loaded(self):
+        if self._memory_interface is not None:
+            return self._memory_interface
+        if self._memory_load_failed:
+            return None
+        with self._memory_init_lock:
+            if self._memory_interface is not None:
+                return self._memory_interface
+            if self._memory_load_failed:
+                return None
+            try:
+                start = time.monotonic()
+                self._memory_interface = self._memory_factory(self.data_root)
+            except Exception:
+                self._memory_load_failed = True
+                return None
+            self.stats["v2_load_seconds"] = time.monotonic() - start
+            self.stats["v2_initializations"] += 1
+            return self._memory_interface
+
+    def execute_v2(self, request):
+        """Route one HTTP request into the Memory v2 boundary (additive)."""
+        with self._stats_lock:
+            self.stats["v2_requests"] = self.stats.get("v2_requests", 0) + 1
+            self.stats["requests"] += 1
+        interface = self._ensure_memory_loaded()
+        if interface is None:
+            return _single_env_v2("internal_error", "server could not initialize memory engine")
+        with self._memory_execute_lock:
+            return interface.execute(request)
+
     def health_response(self):
         """Build a live-metrics health envelope (outside Contract v1)."""
         with self._stats_lock:
             requests = self.stats["requests"]
+            v2_requests = self.stats.get("v2_requests", 0)
             initializations = self.stats["initializations"]
+            v2_initializations = self.stats.get("v2_initializations", 0)
             load_seconds = self.stats["load_seconds"]
+            v2_load_seconds = self.stats.get("v2_load_seconds")
         uptime = time.monotonic() - self._start_time
         return {
             "ok": True,
             "contract_version": CONTRACT_VERSION,
+            "contract_version_v2": V2_CONTRACT_VERSION,
             "uptime": round(uptime, 3),
             "request_count": requests,
+            "v2_request_count": v2_requests,
             "initialization_count": initializations,
+            "v2_initialization_count": v2_initializations,
             "load_seconds": load_seconds,
+            "v2_load_seconds": v2_load_seconds,
         }
 
     def close(self):
@@ -228,6 +293,12 @@ class KnowledgeHTTPServer(ThreadingHTTPServer):
             except Exception:  # noqa: BLE001 - close must not raise
                 pass
             self._interface = None
+        if getattr(self, "_memory_interface", None) is not None:
+            try:
+                self._memory_interface.close()
+            except Exception:
+                pass
+            self._memory_interface = None
         self._write_stats()
 
     def _write_stats(self):
@@ -266,6 +337,7 @@ class V1Handler(BaseHTTPRequestHandler):
     # the shutdown request.
     timeout = 0.25
     _CONTRACT_PATH = "/v1/execute"
+    _CONTRACT_PATH_V2 = "/v2/execute"
     _HEALTH_PATH = "/health"
 
     # -- helpers -----------------------------------------------------------
@@ -348,7 +420,7 @@ class V1Handler(BaseHTTPRequestHandler):
         if self.path == self._HEALTH_PATH:
             self._send_json(200, self._engine.health_response())
             return
-        if self.path == self._CONTRACT_PATH:
+        if self.path in (self._CONTRACT_PATH, self._CONTRACT_PATH_V2):
             self._reject_method()
             return
         self._send_json(
@@ -362,13 +434,15 @@ class V1Handler(BaseHTTPRequestHandler):
         operation = None
         error_code = None
         status = 200
+        is_v2 = (self.path == self._CONTRACT_PATH_V2)
+        is_v1 = (self.path == self._CONTRACT_PATH)
 
-        if self.path != self._CONTRACT_PATH:
+        if not (is_v1 or is_v2):
             status = 404
             error_code = "invalid_request"
             self._send_json(
                 status, _single_env("invalid_request",
-                                    "unknown endpoint (use %s)" % self._CONTRACT_PATH))
+                                    "unknown endpoint (use %s or %s)" % (self._CONTRACT_PATH, self._CONTRACT_PATH_V2)))
             duration_ms = (time.monotonic() - start) * 1000
             self._log_request(method, path, status, duration_ms,
                               error_code=error_code)
@@ -377,8 +451,9 @@ class V1Handler(BaseHTTPRequestHandler):
         if server.api_key and not self._authorized(server.api_key):
             status = 401
             error_code = "unauthorized"
+            env_fn = _single_env_v2 if is_v2 else _single_env
             self._send_json(
-                status, _single_env("unauthorized", "missing or invalid API key"))
+                status, env_fn("unauthorized", "missing or invalid API key"))
             duration_ms = (time.monotonic() - start) * 1000
             self._log_request(method, path, status, duration_ms,
                               error_code=error_code)
@@ -388,8 +463,9 @@ class V1Handler(BaseHTTPRequestHandler):
         if content_type.strip().lower() != "application/json":
             status = 415
             error_code = "invalid_request"
+            env_fn = _single_env_v2 if is_v2 else _single_env
             self._send_json(
-                status, _single_env("invalid_request", "unsupported content type"))
+                status, env_fn("invalid_request", "unsupported content type"))
             duration_ms = (time.monotonic() - start) * 1000
             self._log_request(method, path, status, duration_ms,
                               error_code=error_code)
@@ -402,8 +478,9 @@ class V1Handler(BaseHTTPRequestHandler):
         if length <= 0:
             status = 411
             error_code = "invalid_request"
+            env_fn = _single_env_v2 if is_v2 else _single_env
             self._send_json(
-                status, _single_env("invalid_request", "missing Content-Length"))
+                status, env_fn("invalid_request", "missing Content-Length"))
             duration_ms = (time.monotonic() - start) * 1000
             self._log_request(method, path, status, duration_ms,
                               error_code=error_code)
@@ -411,8 +488,9 @@ class V1Handler(BaseHTTPRequestHandler):
         if length > server.max_body_bytes:
             status = 413
             error_code = "invalid_request"
+            env_fn = _single_env_v2 if is_v2 else _single_env
             self._send_json(
-                status, _single_env("invalid_request", "request body too large"))
+                status, env_fn("invalid_request", "request body too large"))
             duration_ms = (time.monotonic() - start) * 1000
             self._log_request(method, path, status, duration_ms,
                               error_code=error_code)
@@ -423,8 +501,9 @@ class V1Handler(BaseHTTPRequestHandler):
         except OSError as exc:
             status = 400
             error_code = "invalid_request"
+            env_fn = _single_env_v2 if is_v2 else _single_env
             self._send_json(
-                status, _single_env("invalid_request",
+                status, env_fn("invalid_request",
                                     "could not read body: %s" % exc))
             duration_ms = (time.monotonic() - start) * 1000
             self._log_request(method, path, status, duration_ms,
@@ -436,14 +515,18 @@ class V1Handler(BaseHTTPRequestHandler):
         except ValueError:
             status = 400
             error_code = "invalid_request"
+            env_fn = _single_env_v2 if is_v2 else _single_env
             self._send_json(
-                status, _single_env("invalid_request", "invalid JSON body"))
+                status, env_fn("invalid_request", "invalid JSON body"))
             duration_ms = (time.monotonic() - start) * 1000
             self._log_request(method, path, status, duration_ms,
                               error_code=error_code)
             return
 
-        envelope = server.execute(request)  # never raises
+        if is_v2:
+            envelope = server.execute_v2(request)  # never raises
+        else:
+            envelope = server.execute(request)  # never raises
         operation = request.get("operation") if isinstance(request, dict) else None
         status = self._status_for(envelope)
         if not envelope.get("ok"):

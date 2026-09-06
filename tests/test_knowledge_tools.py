@@ -10,7 +10,7 @@ from tools.knowledge_tools import KnowledgeTools
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 VALID_DIR = os.path.join(FIXTURES, "valid")
 TOOLS_DIR = os.path.join(FIXTURES, "tools")
-KNOWLEDGE_DIR = os.path.join(os.path.dirname(__file__), "..", "knowledge")
+KNOWLEDGE_DIR = os.path.join(FIXTURES, "knowledge_react")
 
 
 def tools_from(directory):

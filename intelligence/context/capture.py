@@ -1,13 +1,13 @@
-"""Context snapshot capture from the environment (Phase 1).
+"""Context snapshot capture — generic Persistent Intelligence Context (Phase 4).
 
 ``capture_context`` reads environment state deterministically to build a
-:class:`ContextSnapshot`. Two captures of the same environment produce the
-same system/project/task values and therefore the same deterministic
-``context_id`` (the temporal dimension differs but is excluded from the id).
+:class:`ContextSnapshot` with 8 generic dimensions. Two captures of the
+same situation produce the same 7 non-temporal dimensions and therefore
+the same deterministic ``context_id`` (temporal differs but is excluded).
 
-Capture is READ-ONLY: it reads the host, interpreter, and project filesystem;
-it never executes code, never mutates any existing data, and holds no
-execution authority.
+Capture is READ-ONLY: never executes code, never mutates data.
+Coding-specific assumptions (language/framework) are kept as optional
+extra detection when project_root is provided, but not required.
 """
 
 import os
@@ -16,35 +16,24 @@ import time
 
 from intelligence.context.schema import ContextSnapshot, derive_context_id
 from intelligence.context.types import (
+    ActorContext,
+    AffectiveContext,
+    EnvironmentContext,
     ProjectContext,
-    SystemContext,
-    TaskContext,
+    SocialContext,
+    SourceContext,
+    SpatialContext,
     TemporalContext,
 )
 
-# Fixed project characteristic weights/name detection maps.
-_KNOWN_FRAMEWORKS = (
-    "django", "flask", "fastapi", "torch", "tensorflow", "pandas",
-)
-_BUILD_FILES = (
-    "pyproject.toml", "setup.py", "setup.cfg", "package.json",
-    "Cargo.toml", "go.mod", "build.gradle", "pom.xml", "Makefile",
-)
-_BUILD_VALUE = {
-    "pyproject.toml": "pyproject",
-    "setup.py": "setuptools",
-    "setup.cfg": "setuptools",
-    "package.json": "npm",
-    "Cargo.toml": "cargo",
-    "go.mod": "go",
-    "build.gradle": "gradle",
-    "pom.xml": "maven",
-    "Makefile": "make",
-}
+# Optional coding detection (kept for backward compat, not required for generic)
+_KNOWN_FRAMEWORKS = ("django", "flask", "fastapi", "torch", "tensorflow", "pandas")
+_BUILD_FILES = ("pyproject.toml", "setup.py", "setup.cfg", "package.json", "Cargo.toml", "go.mod", "build.gradle", "pom.xml", "Makefile")
+_BUILD_VALUE = {"pyproject.toml": "pyproject", "setup.py": "setuptools", "setup.cfg": "setuptools", "package.json": "npm", "Cargo.toml": "cargo", "go.mod": "go", "build.gradle": "gradle", "pom.xml": "maven", "Makefile": "make"}
 
 
-def _detect_system() -> SystemContext:
-    return SystemContext(
+def _detect_environment() -> EnvironmentContext:
+    return EnvironmentContext(
         os=platform.system().lower(),
         os_version=platform.release(),
         arch=platform.machine(),
@@ -52,108 +41,145 @@ def _detect_system() -> SystemContext:
     )
 
 
-def _detect_project(project_root):
-    root = project_root
-    if root is None:
-        return ProjectContext()
-    d = {
-        "language": "",
-        "framework": "",
-        "build": "",
-        "extra": {},
-    }
-    files = set()
-    try:
-        for entry in os.listdir(root):
-            files.add(entry.lower())
-    except (OSError, ValueError):
-        return ProjectContext()
+def _detect_project_generic(project_root=None, task_metadata=None):
+    """Detect project identity generically.
 
-    if any(name in files for name in
-           ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt",
-            "setup.py", "tox.ini")):
-        d["language"] = "python"
-    elif "package.json" in files:
-        d["language"] = "javascript"
-    elif "cargo.toml" in files:
-        d["language"] = "rust"
-    elif "go.mod" in files:
-        d["language"] = "go"
-    else:
-        d["language"] = "unknown"
-
-    present_build = [b for b in _BUILD_FILES if b.lower() in files]
-    if present_build:
-        d["build"] = _BUILD_VALUE[present_build[0]]
-
+    If project_root provided, optionally detect language/framework (legacy).
+    Otherwise return minimal project with project_id/vocabulary if in task_metadata.
+    """
+    extra = {}
+    language = ""
     framework = ""
-    for fw in _KNOWN_FRAMEWORKS:
-        marker = _framework_marker(fw, root)
-        if marker:
-            framework = fw
-            break
-    d["framework"] = framework
-    return ProjectContext(**d)
+    build = ""
+    project_id = ""
+    vocabulary_id = ""
 
+    # Extract generic project hints from task_metadata if provided
+    if isinstance(task_metadata, dict):
+        project_id = str(task_metadata.get("project_id", "") or "")
+        vocabulary_id = str(task_metadata.get("vocabulary_id", "") or "")
 
-def _framework_marker(framework, root):
-    """Return truthy if a framework marker is present in the project root."""
-    markers = {
-        "django": "manage.py",
-        "flask": None,   # detected via dependency below is skipped; keep none
-        "fastapi": None,
-        "torch": None,
-        "tensorflow": None,
-        "pandas": None,
-    }
-    marker = markers.get(framework)
-    if marker and os.path.isfile(os.path.join(root, marker)):
-        return marker
-    return None
+    if project_root is not None:
+        try:
+            files = {f.lower() for f in os.listdir(project_root)}
+        except (OSError, ValueError):
+            files = set()
+        if any(n in files for n in ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "tox.ini")):
+            language = "python"
+        elif "package.json" in files:
+            language = "javascript"
+        elif "cargo.toml" in files:
+            language = "rust"
+        elif "go.mod" in files:
+            language = "go"
 
+        present = [b for b in _BUILD_FILES if b.lower() in files]
+        if present:
+            build = _BUILD_VALUE[present[0]]
 
-def _detect_task(task_metadata):
-    md = dict(task_metadata or {})
-    return TaskContext(
-        type=str(md.get("type", "")),
-        domain=str(md.get("domain", "")),
-        error_pattern=str(md.get("error_pattern", "")),
+        for fw in _KNOWN_FRAMEWORKS:
+            if fw == "django" and os.path.isfile(os.path.join(project_root, "manage.py")):
+                framework = fw
+                break
+
+    d = {}
+    if project_id:
+        d["project_id"] = project_id
+    if vocabulary_id:
+        d["vocabulary_id"] = vocabulary_id
+    # Legacy fields kept as optional extra, not required
+    if language:
+        d["language"] = language
+    if framework:
+        d["framework"] = framework
+    if build:
+        d["build"] = build
+    # Return via ProjectContext (handles project_id/vocab)
+    return ProjectContext(
+        project_id=project_id,
+        vocabulary_id=vocabulary_id,
+        language=language,
+        framework=framework,
+        build=build,
+        extra=extra,
     )
+
+
+def _detect_source(task_metadata=None, project_root=None):
+    md = dict(task_metadata or {})
+    # Map legacy task fields to source, plus generic adapter fields
+    adapter = str(md.get("adapter", "") or md.get("source", "") or "")
+    uri = str(md.get("uri", "") or "")
+    payload_hash = str(md.get("payload_hash", "") or "")
+    return SourceContext(
+        adapter=adapter,
+        uri=uri,
+        payload_hash=payload_hash,
+        type=str(md.get("type", "") or ""),
+        domain=str(md.get("domain", "") or ""),
+        error_pattern=str(md.get("error_pattern", "") or ""),
+        extra={k: v for k, v in md.items() if k not in ("adapter", "uri", "payload_hash", "type", "domain", "error_pattern", "project_id", "vocabulary_id", "user_id", "location", "with", "mood")},
+    )
+
+
+def _detect_actor(task_metadata=None):
+    md = dict(task_metadata or {})
+    user_id = str(md.get("user_id", "") or md.get("actor_id", "") or "")
+    return ActorContext(user_id=user_id)
+
+
+def _detect_spatial(task_metadata=None):
+    md = dict(task_metadata or {})
+    loc = str(md.get("location", "") or "")
+    return SpatialContext(location=loc)
+
+
+def _detect_social(task_metadata=None):
+    md = dict(task_metadata or {})
+    with_user = str(md.get("with", "") or md.get("with_user", "") or "")
+    return SocialContext(with_user=with_user)
+
+
+def _detect_affective(task_metadata=None):
+    md = dict(task_metadata or {})
+    mood = str(md.get("mood", "") or "")
+    return AffectiveContext(mood=mood)
 
 
 def _detect_temporal() -> TemporalContext:
-    return TemporalContext(
-        captured_at_epoch=time.time(),
-        timezone=time.tzname[0],
-    )
+    return TemporalContext(captured_at_epoch=time.time(), timezone=time.tzname[0])
 
 
 def capture_context(project_root=None, task_metadata=None) -> ContextSnapshot:
-    """Capture a deterministic operational-context snapshot.
+    """Capture a deterministic generic context snapshot.
 
     Parameters
     ----------
     project_root : str, optional
-        Directory whose language/framework/build is detected. When None, the
-        project dimension is empty.
+        Directory for optional language/framework detection (legacy, not required).
     task_metadata : dict, optional
-        Optional ``{type, domain, error_pattern, extra}`` describing the task.
+        Generic hints: project_id, vocabulary_id, adapter, uri, payload_hash,
+        user_id, location, with, mood, plus legacy type/domain/error_pattern.
 
-    Returns
-    -------
-    ContextSnapshot
+    Returns ContextSnapshot with 8 dimensions (temporal excluded from id).
     """
-    system = _detect_system()
-    project = _detect_project(project_root)
-    task = _detect_task(task_metadata)
+    env = _detect_environment()
+    proj = _detect_project_generic(project_root, task_metadata)
+    src = _detect_source(task_metadata, project_root)
+    actor = _detect_actor(task_metadata)
+    spatial = _detect_spatial(task_metadata)
+    social = _detect_social(task_metadata)
+    affective = _detect_affective(task_metadata)
     temporal = _detect_temporal()
-    s = system.as_dict()
-    p = project.as_dict()
-    t = task.as_dict()
+
     return ContextSnapshot.build(
-        system=s,
-        project=p,
-        task=t,
+        environment=env.as_dict(),
+        project=proj.as_dict(),
+        source=src.as_dict(),
+        actor=actor.as_dict(),
+        spatial=spatial.as_dict(),
+        social=social.as_dict(),
+        affective=affective.as_dict(),
         temporal=temporal.as_dict(),
         captured_at_epoch=temporal.captured_at_epoch,
     )

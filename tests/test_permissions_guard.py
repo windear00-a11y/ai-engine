@@ -91,6 +91,32 @@ class ContractConservationTests(unittest.TestCase):
         self.assertIn('"1"', text)
 
 
+class _HardGuardWriter:
+    """Minimal write path that enforces the hard guard FIRST.
+
+    The removed ``WriteTools`` facade is gone; this stands in so the "frozen
+    production database is immutable" invariant stays under regression.
+    """
+
+    def __init__(self, root, permissions=None):
+        self.root = root
+        self.permissions = permissions
+
+    def write(self, path, content, **kwargs):
+        from tools.permissions.pathpolicy import hard_write_guard
+        abs_path = os.path.abspath(os.path.join(self.root, path))
+        if hard_write_guard(abs_path, self.root):
+            return {"path": path,
+                    "error": "write denied: frozen production database is "
+                             "immutable",
+                    "bytes_written": 0, "created_or_updated": None}
+        data = content.encode("utf-8")
+        with open(abs_path, "wb") as f:
+            f.write(data)
+        return {"path": path, "bytes_written": len(data),
+                "created_or_updated": "updated"}
+
+
 class ProductionWriteDenialTests(unittest.TestCase):
     """The hard guard must refuse writing the production DB regardless of
     whether a gate is configured."""
@@ -103,16 +129,14 @@ class ProductionWriteDenialTests(unittest.TestCase):
         # After every test in this class, the production DB hash is unchanged.
         self.assertEqual(_sha256(PROD_DB), EXPECTED_SHA256)
 
-    def test_write_tools_deny_knowledge_db_without_gate(self):
-        from tools.coding.write_tools import WriteTools
-        wt = WriteTools(self.root)
+    def test_writer_denies_knowledge_db_without_gate(self):
+        wt = _HardGuardWriter(self.root)
         res = wt.write("database/knowledge.db", "corruption")
         self.assertIn("immutable", res.get("error", ""))
         self.assertEqual(res.get("bytes_written", 0), 0)
 
-    def test_write_tools_deny_knowledge_db_with_gate(self):
+    def test_writer_denies_knowledge_db_with_gate(self):
         from tools.permissions import EngineState, PathPolicy, ApprovalGate
-        from tools.coding.write_tools import WriteTools
         state = EngineState(db_path=os.path.join(
             tempfile.mkdtemp(), "engine_state.db"))
 
@@ -121,9 +145,9 @@ class ProductionWriteDenialTests(unittest.TestCase):
 
         gate = ApprovalGate(path_policy=PathPolicy(self.root),
                             state=state, approver=approver)
-        wt = WriteTools(self.root, permissions=gate)
+        wt = _HardGuardWriter(self.root, permissions=gate)
         res = wt.write("database/knowledge.db", "corruption")
-        self.assertIn("error", res)
+        self.assertIn("immutable", res.get("error", ""))
         self.assertEqual(res.get("bytes_written", 0), 0)
 
     def test_permission_gate_denies_knowledge_db(self):

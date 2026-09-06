@@ -1,7 +1,7 @@
-"""ai_engine -- command-line client for the Knowledge API.
+"""ai_engine — Generic Persistent Intelligence System.
 
-Runs via ``python -m ai_engine``. Thin, read-only client over
-:class:`api.KnowledgeAPI`; contains no database logic of its own.
+Local-first, deterministic, per-project, no network, no LLM.
 """
 
-__all__ = ["main"]
+__version__ = "0.10.0"
+__all__ = ["__version__"]

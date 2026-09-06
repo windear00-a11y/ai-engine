@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-engine"
+version = "0.10.0"
+description = "Local-first Persistent Intelligence System — generic diary/memory/experience for local recall and decisions"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+authors = [
+    { name = "AI Engine" }
+]
+license = { text = "MIT" }
+keywords = ["persistent-intelligence", "memory", "local-first", "deterministic"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/ai-engine/ai-engine"
+
+[project.scripts]
+ai-engine = "ai_engine.__main__:main"
+ai_engine = "ai_engine.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["ai_engine*", "api*", "intelligence*", "retrieval*", "ingestion*", "importing*", "external_import*", "knowledge_client*", "external_http_client*", "http_server*", "tools*"]
+
+[tool.setuptools.package-data]
+ai_engine = ["vocabularies/*.json"]

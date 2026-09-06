@@ -1,6 +1,12 @@
 """Main cognitive loop orchestrator (Phase 9).
 
 PERCEIVE → RETRIEVE → REASON → DECIDE → PLAN → ACT → OBSERVE → VERIFY → LEARN
+
+Generic Persistent Intelligence Core loop. It is domain-neutral: planning uses
+the generic planner only, retrieval uses the generic ranked retrievers, and no
+domain (e.g. Code) implementation or fallback is reachable. Missing optional
+plugins fail explicitly and safely — the loop never falls back to domain
+behavior.
 """
 
 import os
@@ -13,55 +19,53 @@ from .types import LoopResult
 
 
 def _planner_fallback(task, workspace_root, max_steps=7, max_duration=120):
+    """Planner — generic Persistent Intelligence Core planner only.
+
+    If the task cannot be satisfied by the generic planner (for example it
+    requires a domain capability provided by an optional external plugin),
+    planning returns ``insufficient_information`` with an explicit reason.
+    Behavior never falls back to domain planning or synthesis.
+    """
     try:
-        from tools.planner.deterministic import DeterministicPlanner
-        planner = DeterministicPlanner(workspace_root or os.getcwd())
+        from ai_engine.generic_planner import plan_generic
         intent = _infer_intent(task)
-        target = task.get("target") or {}
-        error = task.get("error") or {}
-        if isinstance(target, dict) and target.get("error") and not error:
-            error = {"message": target.get("error")}
-        constraints = task.get("constraints") or {}
+        situation = {"problem": task.get("description") or task.get("task_id") or "generic", "intent": intent}
+        objective = task.get("objective") or task.get("description") or ""
+        constraints = dict(task.get("constraints") or {})
         constraints.setdefault("max_steps", max_steps)
         constraints.setdefault("max_duration", max_duration)
-        result = planner.generate(intent=intent, target=target, error=error,
-                                  constraints=constraints)
-        # If planner fails due to missing project index, synthesize a minimal
-        # deterministic plan so the loop can still complete in test workspaces
-        # that lack an index. This keeps the loop deterministic and allows the
-        # intelligence pipeline (experience/learning) to be exercised without a
-        # real project. The synthetic plan respects the intent's tool contract.
-        if result.get("planner_status") == "insufficient_information" and "no project index" in str(result.get("reason", "")):
+        result = plan_generic(situation=situation, objective=objective, available_information={}, constraints=constraints, context={})
+        if result["status"] in ("ok", "no_action") and result.get("selected_action"):
             import hashlib
             task_id = task.get("task_id") or task.get("id") or "task_unknown"
-            synthetic_id = "plan_" + hashlib.sha256(task_id.encode()).hexdigest()[:12]
-            target_file = target.get("file", "src/utils.py") if isinstance(target, dict) else "src/utils.py"
-            if intent == "bug_fix":
-                steps = [
-                    {"id": f"{synthetic_id}_s0", "tool": "file.read", "inputs": {"path": target_file}},
-                    {"id": f"{synthetic_id}_s1", "tool": "file.diff", "inputs": {"path": target_file, "proposed_content": "preview"}},
-                ]
-            elif intent == "test_verify":
-                steps = [
-                    {"id": f"{synthetic_id}_s0", "tool": "file.read", "inputs": {"path": target_file}},
-                    {"id": f"{synthetic_id}_s1", "tool": "project.test", "inputs": {}},
-                ]
-            else:
-                steps = [
-                    {"id": f"{synthetic_id}_s0", "tool": "project.inspect", "inputs": {}},
-                    {"id": f"{synthetic_id}_s1", "tool": "file.read", "inputs": {"path": target_file}},
-                ]
+            synth_id = "plan_" + hashlib.sha256(task_id.encode()).hexdigest()[:12]
+            act = result["selected_action"]
+            steps = [{"id": f"{synth_id}_s0", "tool": act["tool"], "inputs": act["inputs"]}]
             return {
                 "planner_status": "ok",
                 "planner_version": "1",
-                "task": {"id": synthetic_id, "description": f"synthetic {intent}", "steps": steps, "max_steps": max_steps, "max_duration": max_duration},
-                "facts": [f"FACT: synthetic plan for {intent}"],
+                "required_authority": result.get("required_authority", False),
+                "task": {"id": synth_id, "description": result["rationale"], "steps": steps, "max_steps": max_steps, "max_duration": max_duration},
+                "facts": [f"FACT: generic plan {result['status']}"],
                 "heuristics": [],
                 "intent": intent,
+                "generic_plan": result,
             }
-        return result
+        return {
+            "planner_status": "insufficient_information",
+            "reason": f"{result.get('rationale', 'generic planner insufficient')}; an optional domain plugin may be required but none is registered",
+            "facts": [],
+            "heuristics": [],
+            "intent": intent,
+        }
     except Exception as e:
-        return {"planner_status": "insufficient_information", "reason": str(e)}
+        return {
+            "planner_status": "insufficient_information",
+            "reason": f"planner unavailable: {e}; an optional domain plugin may be required but none is registered",
+            "facts": [],
+            "heuristics": [],
+            "intent": _infer_intent(task),
+        }
 
 
 def execute_intelligence_loop(task, workspace_root=None,
@@ -87,7 +91,7 @@ def execute_intelligence_loop(task, workspace_root=None,
     workspace_root : str
     operator_approval : callable(decision) -> bool, optional
     *_store : optional store instances (for :memory: testing)
-    intelligence_enabled : bool, if False loop skips intelligence and uses fallback
+    intelligence_enabled : bool, if False loop skips intelligence
 
     Returns LoopResult.
     """
@@ -110,48 +114,39 @@ def execute_intelligence_loop(task, workspace_root=None,
         context_id = "ctx_unknown"
         fallback_used = True
 
-    # RETRIEVE (v1.1: deterministic KnowledgeClient + ranked, lifecycle/context filtered, bounded)
+    # RETRIEVE (deterministic ranked KnowledgeClient + experience, filtered/bounded)
     knowledge = []
     experiences = []
     retrieval = {"knowledge": [], "experience": [], "filtered": [], "ambiguous": False, "query_terms": [], "evidence_chain_id": None}
     if not fallback_used and intelligence_enabled:
         try:
-            # If caller provided knowledge_nodes, use as-is (backward compat) but still build retrieval report
+            import hashlib
+            import json as _json
             if knowledge_nodes is not None:
                 knowledge = list(knowledge_nodes)
-                # Build retrieval report for provided nodes (still deterministic query_terms for audit)
                 try:
-                    from engine.knowledge_retrieval import build_query_terms as _bqt
+                    from retrieval.ranked_knowledge import build_query_terms as _bqt
                     _qt = _bqt({"intent": task.get("task_type") or task.get("intent") or "generic", "target": task.get("target") or {}, "error": task.get("error") or {}, "domain": task.get("domain") or ""})
                 except Exception:
                     _qt = []
-                import hashlib, json as _json
                 _evc = "evc_" + hashlib.sha256(_json.dumps({"query_terms": _qt, "top_ids": [n.get("id") for n in knowledge[:5]]}, sort_keys=True).encode()).hexdigest()[:16] if knowledge else None
-                retrieval = {"knowledge": [{"id": n.get("id"), "score": 1.0, "raw_score": 1, "quality": 1.0, "context_match": 1.0, "lifecycle": n.get("lifecycle", {}).get("status", "active")} for n in knowledge[:5]], "filtered": [], "ambiguous": False, "query_terms": _qt, "evidence_chain_id": _evc, "candidate_count": len(knowledge)}
-                # Experience still via ranked retrieval
-                exp_res = None
-                try:
-                    from engine.experience_retrieval import retrieve_ranked_experience as _exp_ret
-                    # Build intent-like for experience
-                    intent_for_exp = {"intent": task.get("task_type") or task.get("intent") or "generic", "target": task.get("target") or {}, "error": task.get("error") or {}, "domain": task.get("domain") or ""}
-                    exp_res = _exp_ret(intent_for_exp, context_snapshot, experience_store=experience_store, max_experience=5)
-                    experiences = exp_res.get("experience", [])
-                    retrieval["experience"] = [{"experience_id": e.experience_id, "score": s, "context_match": c} for s, _, e, c, _ in exp_res.get("all_scored", [])[:5]]
-                except Exception:
-                    experiences = retrieve_experience(task, context_snapshot, experience_store=experience_store)
+                retrieval = {
+                    "knowledge": [{"id": n.get("id"), "score": 1.0, "raw_score": 1, "quality": 1.0, "context_match": 1.0, "lifecycle": n.get("lifecycle", {}).get("status", "active")} for n in knowledge[:5]],
+                    "filtered": [],
+                    "ambiguous": False,
+                    "query_terms": _qt,
+                    "evidence_chain_id": _evc,
+                    "candidate_count": len(knowledge),
+                }
+                experiences = retrieve_experience(task, context_snapshot, experience_store=experience_store)
             else:
-                # Deterministic KnowledgeClient retrieval via v1.1
-                from engine.knowledge_retrieval import retrieve_ranked_knowledge, build_query_terms
-                from engine.experience_retrieval import retrieve_ranked_experience
-                # Build intent object for query
+                from retrieval.ranked_knowledge import retrieve_ranked_knowledge, build_query_terms
+                from retrieval.ranked_experience import retrieve_ranked_experience
                 intent_obj = {"intent": task.get("task_type") or task.get("intent") or "generic", "target": task.get("target") or {}, "error": task.get("error") or {}, "domain": task.get("domain") or ""}
-                # Knowledge
                 k_res = retrieve_ranked_knowledge(intent_obj, context_snapshot, knowledge_client=None, candidate_limit=50, max_knowledge=5)
                 knowledge = k_res.get("knowledge", [])
-                # Experience
                 e_res = retrieve_ranked_experience(intent_obj, context_snapshot, experience_store=experience_store, max_experience=5)
                 experiences = e_res.get("experience", [])
-                # Assemble retrieval audit (additive, no new DB)
                 retrieval = {
                     "knowledge": [{"id": n.get("id"), "score": n.get("_score", {}).get("final_score"), "raw_score": n.get("_score", {}).get("raw_score"), "quality": n.get("_score", {}).get("quality"), "context_match": n.get("_score", {}).get("context_match"), "lifecycle": n.get("_score", {}).get("lifecycle"), "provenance": n.get("_provenance")} for n in knowledge],
                     "experience": [{"experience_id": e.experience_id, "score": s, "context_match": c} for s, _, e, c, _ in e_res.get("all_scored", [])[:5]],
@@ -187,8 +182,6 @@ def execute_intelligence_loop(task, workspace_root=None,
     plan_id = None
     planner_status = "ok"
     try:
-        # If decision selected a strategy, use its tool_sequence to inform planning?
-        # For determinism, we call planner with intent derived from task.
         plan_result = _planner_fallback(task, workspace_root, max_steps, max_duration)
         planner_status = plan_result.get("planner_status", "ok")
         if planner_status == "ok":
@@ -206,19 +199,8 @@ def execute_intelligence_loop(task, workspace_root=None,
     approval_required = False
     if decision is not None:
         approval_required = bool(getattr(decision, "approval_required", False))
-    # Also check if plan contains mutating steps
-    mutating_tools = {"file.write", "file.edit", "file.mkdir", "project.build", "project.test"}
-    plan_is_mutating = False
-    if plan_result and plan_result.get("task", {}).get("steps"):
-        for s in plan_result["task"]["steps"]:
-            if s.get("tool") in mutating_tools:
-                plan_is_mutating = True
-                break
-    # For decision-based risk, approval_required already captures; also if plan mutating
-    if plan_is_mutating and not approval_required:
-        # Even if decision didn't flag, mutating plan still needs approval per safety
-        # But for read-only bug_fix templates (file.read/diff only) it's not mutating
-        pass
+    if plan_result and plan_result.get("required_authority"):
+        approval_required = True
 
     if approval_required:
         approved = False
@@ -248,209 +230,64 @@ def execute_intelligence_loop(task, workspace_root=None,
             )
 
     # ACT + OBSERVE + VERIFY
-    # Try real TaskEngine execution when a real indexed workspace is present;
-    # otherwise synthesize evidence deterministically. Real execution goes
-    # through ApprovalGate + EngineState + TaskEngine, preserving safety.
+    # Generic-only observation: evidence and outcome are derived from the
+    # deterministic plan state. There is no domain execution layer here; a
+    # future optional plugin may supply one, but its absence is an explicit
+    # safe state (planner stays "insufficient" and outcome is UNKNOWN).
     outcome_id = None
     outcome = None
     evidence_id = None
-    real_execution_used = False
-    task_engine_result = None
-    has_index = False
     try:
-        # Attempt real execution if workspace has a project index and planner succeeded
-        if workspace_root and plan_result and plan_result.get("planner_status") == "ok":
-            idx_path = os.path.join(os.path.realpath(workspace_root), ".ai-engine", "project_index.db")
-            has_index = os.path.exists(idx_path)
-        if has_index and plan_result and plan_result.get("planner_status") == "ok":
-            # Real TaskEngine path
-            from intelligence.evidence.schema import EvidenceRecord
-            from intelligence.evidence.types import EvidenceType
-            from intelligence.evidence.store import EvidenceStore
-            from tools.permissions import Policy, PathPolicy, ApprovalGate
-            from tools.permissions.journal import EngineState
-            from engine.task_engine import TaskEngine
-            import hashlib, json
-            # EngineState isolated to workspace (or validation dir)
-            state_db = os.path.join(os.path.realpath(workspace_root), ".ai-engine", "engine_state.db")
-            policy = Policy()
-            path_policy = PathPolicy(os.path.realpath(workspace_root), policy=policy)
-            state = EngineState(db_path=state_db)
-            # Approver tied to decision's approval: if decision requires approval, operator must approve
-            def _approver(proposal):
-                # For file writes, approve only if operator approved the decision
-                if decision is not None and getattr(decision, "approval_required", False):
-                    if operator_approval is not None:
-                        try:
-                            return bool(operator_approval(decision.to_dict() if hasattr(decision, "to_dict") else decision))
-                        except Exception:
-                            return False
-                    return False
-                # Read-only or low-risk: allow (TaskEngine's own gate will handle)
-                # For writes when no decision approval needed, still require explicit approval via operator_approval if provided?
-                # For validation, we treat writes as approved when operator_approval returns True for the decision
-                return True
-            gate = ApprovalGate(path_policy=path_policy, state=state, approver=_approver)
-            engine = TaskEngine(workspace_root=workspace_root, permissions=gate, policy=policy, approver=_approver)
-            task_obj = plan_result.get("task")
-            # Sanitize file.diff $ref that TaskEngine cannot resolve (planner generates "$ref":"id.result.content" which fails)
-            try:
-                sanitized = dict(task_obj)
-                new_steps = []
-                for s in task_obj.get("steps", []):
-                    inp = dict(s.get("inputs", {}) or {})
-                    if s.get("tool") == "file.diff" and isinstance(inp.get("proposed_content"), dict) and "$ref" in inp["proposed_content"]:
-                        target = inp.get("path")
-                        try:
-                            abs_p = os.path.join(os.path.realpath(workspace_root), target) if target else None
-                            if abs_p and os.path.isfile(abs_p):
-                                with open(abs_p, "r", encoding="utf-8") as f:
-                                    actual = f.read()
-                                inp["proposed_content"] = actual
-                            else:
-                                inp["proposed_content"] = "preview"
-                        except Exception:
-                            inp["proposed_content"] = "preview"
-                    new_steps.append({"id": s["id"], "tool": s["tool"], "inputs": inp})
-                sanitized["steps"] = new_steps
-                task_obj = sanitized
-            except Exception:
-                pass
-            # Run the planner's task via real TaskEngine (read-only steps + diff preview)
-            task_engine_result = engine.run_task(task_obj)
-            # If decision was mutating and approved, perform the actual E302 fix via gated file write
-            # Detect E302 pattern: missing blank line between two defs
-            if decision is not None and getattr(decision, "approval_required", False):
-                approved = False
-                if operator_approval is not None:
-                    try:
-                        approved = bool(operator_approval(decision.to_dict() if hasattr(decision, "to_dict") else decision))
-                    except Exception:
-                        approved = False
-                if approved and task.get("task_type") == "bug_fix":
-                    target_file = (task.get("target") or {}).get("file")
-                    if target_file:
-                        abs_target = os.path.join(os.path.realpath(workspace_root), target_file)
-                        if os.path.isfile(abs_target):
-                            try:
-                                with open(abs_target, "r", encoding="utf-8") as f:
-                                    content = f.read()
-                                # Simple E302 fix: ensure two newlines between defs (insert blank line)
-                                # Detect pattern: "pass\ndef " without blank line
-                                if "pass\ndef " in content:
-                                    fixed = content.replace("pass\ndef ", "pass\n\ndef ")
-                                    # Use gated file_write via engine.coding
-                                    # file_write expects path and content
-                                    res = engine.coding.file_write(path=target_file, content=fixed)
-                                    # Also run project.check to verify fix
-                                    try:
-                                        engine.coding.project_check()
-                                    except Exception:
-                                        pass
-                            except Exception as e:
-                                errors.append(f"real file fix failed: {e}")
-            # Create real evidence from TaskEngine result
-            ev_store = evidence_store or EvidenceStore()
-            close_ev = evidence_store is None
-            payload = {"task_id": task_id, "plan_id": plan_id, "context_id": context_id, "engine_status": task_engine_result.get("status")}
-            ev_id = "ev_" + hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
-            ev_rec = EvidenceRecord(
-                evidence_id=ev_id,
-                source_observation_id=f"obs_{task_id}",
-                claim=f"real TaskEngine execution of {task_id}: {task_engine_result.get('status')}",
-                context_id=context_id,
-                evidence_type=EvidenceType.FACT,
-                supporting_data={"plan_id": plan_id, "planner_status": planner_status, "engine_result": task_engine_result.get("status"), "steps": len(task_engine_result.get("steps", []))},
-                created_at_epoch=time.time(),
-            )
-            ev_store.save(ev_rec)
-            if close_ev:
-                ev_store.close()
-            evidence_id = ev_id
-            # Verification outcome based on TaskEngine result
-            from intelligence.outcome.schema import Outcome, derive_outcome_id
-            from intelligence.outcome.types import OutcomeClassification
-            from intelligence.outcome.store import OutcomeStore
-            oc_store = outcome_store or OutcomeStore()
-            close_oc = outcome_store is None
-            status = task_engine_result.get("status")
-            if status in ("completed", "planned", "completed_with_errors"):
-                classification = OutcomeClassification.SUCCESS
-            elif status in ("failed", "invalid"):
-                classification = OutcomeClassification.FAILURE
-            else:
-                classification = OutcomeClassification.UNKNOWN
-            oc_id = derive_outcome_id(plan_id, context_id, classification, [evidence_id], {})
-            outcome = Outcome(
-                outcome_id=oc_id,
-                plan_id=plan_id,
-                context_id=context_id,
-                classification=classification,
-                verification_evidence_ids=(evidence_id,),
-                created_at_epoch=time.time(),
-            )
-            oc_store.save(outcome)
-            if close_oc:
-                oc_store.close()
-            outcome_id = oc_id
-            real_execution_used = True
+        from intelligence.evidence.schema import EvidenceRecord
+        from intelligence.evidence.types import EvidenceType
+        from intelligence.evidence.store import EvidenceStore
+        import hashlib, json
+        ev_store = evidence_store or EvidenceStore()
+        close_ev = evidence_store is None
+        is_synthetic = bool(plan_result and plan_result.get("synthetic"))
+        payload = {"task_id": task_id, "plan_id": plan_id, "context_id": context_id, "synthetic": is_synthetic}
+        ev_id = "ev_" + hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+        ev_rec = EvidenceRecord(
+            evidence_id=ev_id,
+            source_observation_id=f"obs_{task_id}",
+            claim=f"loop execution of {task_id}",
+            context_id=context_id,
+            evidence_type=EvidenceType.FACT,
+            supporting_data={"plan_id": plan_id, "planner_status": planner_status, "synthetic": is_synthetic},
+            created_at_epoch=time.time(),
+        )
+        ev_store.save(ev_rec)
+        if close_ev:
+            ev_store.close()
+        evidence_id = ev_id
+        from intelligence.outcome.schema import Outcome, derive_outcome_id
+        from intelligence.outcome.types import OutcomeClassification
+        from intelligence.outcome.store import OutcomeStore
+        oc_store = outcome_store or OutcomeStore()
+        close_oc = outcome_store is None
+        if planner_status == "ok":
+            classification = OutcomeClassification.SUCCESS
         else:
-            raise RuntimeError("no real index, fallback to synthetic")
-    except Exception as e:
-        if not real_execution_used:
-            # Fallback synthetic path (deterministic, for workspaces without index or test :memory: stores)
-            try:
-                from intelligence.evidence.schema import EvidenceRecord
-                from intelligence.evidence.types import EvidenceType
-                from intelligence.evidence.store import EvidenceStore
-                import hashlib, json
-                ev_store = evidence_store or EvidenceStore()
-                close_ev = evidence_store is None
-                payload = {"task_id": task_id, "plan_id": plan_id, "context_id": context_id}
-                ev_id = "ev_" + hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
-                ev_rec = EvidenceRecord(
-                    evidence_id=ev_id,
-                    source_observation_id=f"obs_{task_id}",
-                    claim=f"loop execution of {task_id}",
-                    context_id=context_id,
-                    evidence_type=EvidenceType.FACT,
-                    supporting_data={"plan_id": plan_id, "planner_status": planner_status},
-                    created_at_epoch=time.time(),
-                )
-                ev_store.save(ev_rec)
-                if close_ev:
-                    ev_store.close()
-                evidence_id = ev_id
-                from intelligence.outcome.schema import Outcome, derive_outcome_id
-                from intelligence.outcome.types import OutcomeClassification
-                from intelligence.outcome.store import OutcomeStore
-                oc_store = outcome_store or OutcomeStore()
-                close_oc = outcome_store is None
-                if planner_status == "ok":
-                    classification = OutcomeClassification.SUCCESS
-                else:
-                    classification = OutcomeClassification.UNKNOWN
-                oc_id = derive_outcome_id(plan_id, context_id, classification, [evidence_id], {})
-                outcome = Outcome(
-                    outcome_id=oc_id,
-                    plan_id=plan_id,
-                    context_id=context_id,
-                    classification=classification,
-                    verification_evidence_ids=(evidence_id,),
-                    created_at_epoch=time.time(),
-                )
-                oc_store.save(outcome)
-                if close_oc:
-                    oc_store.close()
-                outcome_id = oc_id
-                if real_execution_used is False and has_index:
-                    errors.append(f"real execution attempted but fell back: {e}")
-            except Exception as e2:
-                errors.append(f"observe/verify failed: {e2}")
+            classification = OutcomeClassification.UNKNOWN
+        oc_id = derive_outcome_id(plan_id, context_id, classification, [evidence_id], {})
+        outcome = Outcome(
+            outcome_id=oc_id,
+            plan_id=plan_id,
+            context_id=context_id,
+            classification=classification,
+            verification_evidence_ids=(evidence_id,),
+            created_at_epoch=time.time(),
+        )
+        oc_store.save(outcome)
+        if close_oc:
+            oc_store.close()
+        outcome_id = oc_id
+    except Exception as e2:
+        errors.append(f"observe/verify failed: {e2}")
 
-    # Record experience (ACT after VERIFY)
+    # Record experience (ACT after VERIFY) — only for genuinely planned, non-synthetic outcomes
     experience_id = None
-    if outcome_id is not None:
+    if outcome_id is not None and planner_status == "ok":
         try:
             from intelligence.experience.schema import ExperienceRecord, derive_experience_id
             from intelligence.experience.store import ExperienceStore
@@ -458,9 +295,9 @@ def execute_intelligence_loop(task, workspace_root=None,
             close_ex = experience_store is None
             strategy_id = getattr(decision, "selected_strategy_id", None) if decision else None
             exp_id = derive_experience_id(task_id, context_id, outcome_id, [evidence_id] if evidence_id else [], strategy_id)
-            # Determine task_type/domain for experience
             tt = task.get("task_type") or _infer_intent(task)
             dom = task.get("domain") or ""
+            summary = {"planner_status": planner_status, "outcome": outcome.classification.value if outcome else "unknown"}
             exp_rec = ExperienceRecord(
                 experience_id=exp_id,
                 task_id=task_id,
@@ -470,7 +307,7 @@ def execute_intelligence_loop(task, workspace_root=None,
                 outcome_id=outcome_id,
                 evidence_ids=tuple([evidence_id] if evidence_id else []),
                 strategy_id=strategy_id,
-                summary={"planner_status": planner_status, "outcome": outcome.classification.value if outcome else "unknown"},
+                summary=summary,
                 synthesized_at_epoch=time.time(),
             )
             ex_store.save(exp_rec)
@@ -480,17 +317,14 @@ def execute_intelligence_loop(task, workspace_root=None,
         except Exception as e:
             errors.append(f"experience failed: {e}")
 
-    # LEARN
+    # LEARN — generic; only meaningfully planned outcomes trigger learning
     learning_event_id = None
-    if outcome_id is not None:
+    if outcome_id is not None and planner_status == "ok":
         try:
             if not intelligence_enabled:
                 raise RuntimeError("learning disabled")
             from intelligence.learning.engine import learn_from_outcome
-            # Learning should see the experience we just recorded, so pass stores
-            # that now contain the new experience/outcome.
             strategy_id_for_learning = getattr(decision, "selected_strategy_id", None) if decision else None
-            # If decision was None, try to infer via experience
             ev_learn = learn_from_outcome(
                 outcome_id, context_id=context_id,
                 strategy_id=strategy_id_for_learning,
@@ -505,9 +339,8 @@ def execute_intelligence_loop(task, workspace_root=None,
         except Exception as e:
             errors.append(f"learning failed: {e}")
 
-    # Final ok: planner ok and not awaiting approval and outcome success or unknown?
+    # Final ok: planner ok and outcome recorded
     ok = planner_status == "ok" and outcome_id is not None
-    # If fallback was used, still ok if planner succeeded
     return LoopResult(
         task_id=task_id,
         context_id=context_id,

@@ -20,6 +20,7 @@ from tools.permissions import EngineState, PathPolicy, ApprovalGate
 from tools.permissions import deterministic_id, checksum_bytes
 from tools.permissions.decisions import Domain, DecisionKind
 from tools.permissions.journal import checksum_bytes as jb_checksum
+from tests._gate_writer_support import GateWriter
 
 
 def _mkws():
@@ -189,14 +190,16 @@ class SnapshotAndStateTests(unittest.TestCase):
         self.assertEqual(d.kind, DecisionKind.ALLOW)
 
 
-class TaskEngineIntegrationTests(unittest.TestCase):
+class WriteGateIntegrationTests(unittest.TestCase):
+    """End-to-end write approval via the generic Core writer (the removed
+    TaskEngine tool registry is gone; the gate + writer are the Core path)."""
+
     def setUp(self):
         self.root = _mkws()
         self.addCleanup(lambda: __import__("shutil").rmtree(
             self.root, ignore_errors=True))
 
-    def test_mutating_step_goes_through_gate(self):
-        from engine.task_engine import TaskEngine
+    def test_mutating_write_goes_through_gate(self):
         from tools.permissions import EngineState, PathPolicy, ApprovalGate
         state = EngineState(db_path=os.path.join(
             tempfile.mkdtemp(), "engine_state.db"))
@@ -209,49 +212,32 @@ class TaskEngineIntegrationTests(unittest.TestCase):
             return True
 
         gate = ApprovalGate(path_policy=pp, state=state, approver=approver)
-        engine = TaskEngine(knowledge_dir=tempfile.mkdtemp(),
-                            workspace_root=self.root,
-                            permissions=gate,
-                            policy=None)
-        task = {
-            "id": "t1",
-            "steps": [
-                {"id": "s1", "tool": "file.write",
-                 "inputs": {"path": "src/out.py", "content": "z = 1\n"}},
-            ],
-        }
-        res = engine.run_task(task)
-        self.assertEqual(res["status"], "completed")
+        wt = GateWriter(self.root, gate)
+        res = wt.write("src/out.py", "z = 1\n")
+        self.assertIsNone(res["error"])
         # The write went through the approval gate.
         self.assertTrue(authorized["seen"])
         out = os.path.join(self.root, "src", "out.py")
         self.assertTrue(os.path.isfile(out))
+        with open(out) as f:
+            self.assertEqual(f.read(), "z = 1\n")
 
-    def test_mutating_step_denied_when_gate_denies(self):
-        from engine.task_engine import TaskEngine
+    def test_mutating_write_denied_when_gate_denies(self):
         from tools.permissions import EngineState, PathPolicy, ApprovalGate
         state = EngineState(db_path=os.path.join(
             tempfile.mkdtemp(), "engine_state.db"))
         gate = ApprovalGate(
             path_policy=PathPolicy(self.root), state=state,
             approver=lambda p: False)  # deny all
-        engine = TaskEngine(knowledge_dir=tempfile.mkdtemp(),
-                            workspace_root=self.root, permissions=gate)
-        task = {
-            "id": "t2",
-            "steps": [
-                {"id": "s1", "tool": "file.write",
-                 "inputs": {"path": "src/no.py", "content": "z = 1\n"}},
-            ],
-        }
-        res = engine.run_task(task)
-        # The write step fails because the gate denies it.
-        self.assertEqual(res["status"], "failed")
-        step = res["steps"][0]
-        self.assertEqual(step["status"], "failed")
-        self.assertIn("write denied", step["error"])
+        wt = GateWriter(self.root, gate)
+        res = wt.write("src/no.py", "z = 1\n")
+        # The write is refused and no file is created.
+        self.assertIn("write denied", res["error"])
+        self.assertEqual(res.get("bytes_written", 0), 0)
         self.assertFalse(os.path.isfile(
             os.path.join(self.root, "src", "no.py")))
+        # Audit/journal show the denial path never produced a mutation.
+        self.assertGreater(state.audit_count(), 0)
 
 
 if __name__ == "__main__":

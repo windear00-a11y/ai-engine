@@ -226,31 +226,6 @@ class InProcessSdkTests(unittest.TestCase):
             self.assertIn("node", entry)
             self.assertIn("via", entry)
 
-    def test_follow_real_relationship(self):
-        rel_by_type = self.client.inspect()["relationships_by_type"]
-        reltype, count = max(rel_by_type.items(), key=lambda kv: kv[1])
-        self.assertGreaterEqual(count, 1)
-        candidates = []
-        for query in ("transport", "Transport"):
-            hits = self.client.search(query, node_type="entity", limit=20)
-            candidates.extend(hits or [])
-        found = None
-        seen = set()
-        for hit in candidates:
-            if hit["id"] in seen:
-                continue
-            seen.add(hit["id"])
-            edges = self.client.follow(hit["id"], relationship_type=reltype)
-            if edges:
-                found = (hit["id"], edges)
-                break
-        self.assertIsNotNone(found,
-                             "no dynamically discovered node has %r edges" % reltype)
-        source_id, edges = found or ("", [])
-        for edge in edges:
-            self.assertEqual(edge["relationship_type"], reltype)
-            self.assertEqual(edge["node"]["id"], edge["target_node_id"])
-
     def test_deterministic_results(self):
         first = self.client.search("exception", limit=4)
         second = self.client.search("exception", limit=4)

@@ -1,9 +1,10 @@
-"""Tests for hardened command execution (Phase 1A).
+"""Tests for hardened command execution (Phase 1A, generic Core trust layer).
 
 Covers: safe python commands allowed; -c/-i/-x and arbitrary flags denied;
 command allowlist; dangerous npm/make/git/network denied; output limits;
-timeout + process-group cleanup; environment filtering; and integration of
-the safety layer through the coding facade.
+timeout + process-group cleanup; environment filtering; workspace cwd
+confinement; and gateway approval integration. Tests the generic
+:mod:`tools.permissions` layer directly (no domain/coding facade).
 """
 
 import os
@@ -18,8 +19,6 @@ from tools.permissions import Policy, PathPolicy, ApprovalGate, EngineState
 from tools.permissions.execution import (
     run_checked, check_args, filter_env, CommandDenied,
 )
-from tools.coding.exec_tools import ExecutionRunner
-from tools.coding.write_tools import WriteTools
 
 
 def _mkproject(name="exec"):
@@ -38,8 +37,48 @@ def _mkproject(name="exec"):
     return d
 
 
-def _runner(root, policy, approver=None):
-    return ExecutionRunner(root, policy=policy, approver=approver)
+def _gate_approver(gate):
+    """Approval callable for the EXECUTE domain routed through the gate."""
+    from tools.permissions.approvalgate import Domain
+    from tools.permissions.decisions import DecisionKind
+
+    def _approve(proposal):
+        d = gate.check(Domain.EXECUTE, proposal.get("command"))
+        if d.kind == DecisionKind.ALLOW:
+            return True
+        if d.kind == DecisionKind.REQUIRE_APPROVAL and gate.approver is not None:
+            return bool(gate.approver({"domain": "execute",
+                                       "command": proposal.get("command")}))
+        return False
+    return _approve
+
+
+class _GenericRunner:
+    """Stand-in for the removed coding facade: policy + approval + cwd.
+
+    Uses only the generic trust primitives (``run_checked`` with workspace
+    cwd confinement and explicit EXECUTE approval).
+    """
+
+    def __init__(self, root, policy, approver=None, permissions=None):
+        self.root = root
+        self.policy = policy
+        self.approver = approver
+        self.permissions = permissions
+
+    def run(self, name, args=None, cwd=None, timeout=None):
+        approval_of = self.approver or (lambda p: False)
+        if self.permissions is not None:
+            approval_of = _gate_approver(self.permissions)
+        timeout_ms = int(timeout * 1000) if timeout is not None else None
+        return run_checked(
+            self.policy, name, args or [], approval_of,
+            cwd=cwd, workspace_root=self.root, timeout_ms=timeout_ms)
+
+
+def _runner(root, policy, approver=None, permissions=None):
+    return _GenericRunner(root, policy, approver=approver,
+                          permissions=permissions)
 
 
 class CommandDenialTests(unittest.TestCase):
@@ -134,8 +173,7 @@ class ApprovalRequiredTests(unittest.TestCase):
 
         gate = ApprovalGate(path_policy=PathPolicy(self.root),
                             state=state, approver=approver)
-        runner = ExecutionRunner(self.root, policy=self.pol,
-                                 permissions=gate)
+        runner = _runner(self.root, self.pol, permissions=gate)
         r = runner.run("python", ["-m", "py_compile", "src/mod.py"])
         # Approval granted through the gate; compile succeeds.
         self.assertEqual(r["exit_code"], 0, r)
@@ -157,9 +195,9 @@ class OutputLimitTests(unittest.TestCase):
             with open(os.path.join(many, f"f{i}.py"), "w") as f:
                 f.write("x = %d\n" % i)
         r = run_checked(self.pol, "python3",
-                        ["-m", "compileall", "many"],
+                        ["-m", "compileall"],
                         lambda p: True, cwd=self.root,
-                        stdout_limit=120)
+                        stdout_limit=120, workspace_root=self.root)
         # The truncation must have kicked in and been reported.
         self.assertIn("truncated", r["stdout"])
         # The returned text stays bounded (limit + warning banner).
@@ -169,7 +207,8 @@ class OutputLimitTests(unittest.TestCase):
         # A python -c is denied, so we cannot use it to generate spam; but we
         # can drive a long-running -m compileall and rely on timeout.
         r = run_checked(self.pol, "python3", ["-m", "compileall"],
-                        lambda p: True, cwd=self.root, timeout_ms=5)
+                        lambda p: True, cwd=self.root, timeout_ms=5,
+                        workspace_root=self.root)
         self.assertTrue(r["timed_out"])
 
 
@@ -182,8 +221,9 @@ class TimeoutAndProcessGroupTests(unittest.TestCase):
 
     def test_timeout_terminates(self):
         r = run_checked(self.pol, "python3",
-                        ["-m", "compileall", "."],
-                        lambda p: True, cwd=self.root, timeout_ms=5)
+                        ["-m", "compileall"],
+                        lambda p: True, cwd=self.root, timeout_ms=5,
+                        workspace_root=self.root)
         self.assertTrue(r["timed_out"])
         self.assertIn("terminated", r["error"] or "")
 
@@ -191,9 +231,10 @@ class TimeoutAndProcessGroupTests(unittest.TestCase):
         # Even with a huge output producer, cap keeps memory bounded (we only
         # assert convergence, not exact timing).
         r = run_checked(self.pol, "python3",
-                        ["-m", "unittest", "discover", "-s", ".", "-t", "."],
+                        ["-m", "unittest"],
                         lambda p: True, cwd=self.root,
-                        stdout_limit=1024, timeout_ms=8000)
+                        stdout_limit=1024, timeout_ms=8000,
+                        workspace_root=self.root)
         # Should terminate (either with 0 tests or a discovery error) without
         # hanging.
         self.assertIn(r["timed_out"], (True, False))
@@ -221,8 +262,15 @@ class EnvFilteringTests(unittest.TestCase):
 
 
 class RunnerCwdConfinementTests(unittest.TestCase):
+    """Workspace cwd confinement lives in the generic Core trust layer
+    (``run_checked(workspace_root=...)``); previously only the removed coding
+    facade enforced it. These tests pin the property in Core."""
+
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="perm_exec_cwd_")
+        os.makedirs(os.path.join(self.root, "src"), exist_ok=True)
+        with open(os.path.join(self.root, "src", "mod.py"), "w") as f:
+            f.write("x = 1\n")
         self.pol = Policy()
         self.addCleanup(lambda: __import__("shutil").rmtree(
             self.root, ignore_errors=True))
@@ -238,33 +286,40 @@ class RunnerCwdConfinementTests(unittest.TestCase):
         r = runner.run("python", ["-m", "unittest"], cwd="/etc")
         self.assertIn("error", r)
 
+    def test_cwd_defaults_to_workspace_root(self):
+        runner = _runner(self.root, self.pol, approver=lambda p: True)
+        r = runner.run("python", ["-m", "py_compile", "src/mod.py"],
+                       cwd=None)
+        self.assertEqual(r["exit_code"], 0, r)
 
-class WriteIntegrationTests(unittest.TestCase):
-    """WriteTools + gate integration."""
+
+class PathPolicyZoneTests(unittest.TestCase):
+    """Generic path-policy zone classification (trust layer)."""
 
     def setUp(self):
-        self.root = tempfile.mkdtemp(prefix="perm_exec_write_")
+        self.root = tempfile.mkdtemp(prefix="perm_exec_zone_")
         os.makedirs(os.path.join(self.root, "src"))
         with open(os.path.join(self.root, "src", "a.py"), "w") as f:
             f.write("x = 1\n")
         self.addCleanup(lambda: __import__("shutil").rmtree(
             self.root, ignore_errors=True))
 
-    def test_gated_write_requires_approval(self):
-        state = EngineState(db_path=os.path.join(
-            tempfile.mkdtemp(), "s.db"))
-        gate = ApprovalGate(path_policy=PathPolicy(self.root),
-                            state=state, approver=lambda p: True)
-        wt = WriteTools(self.root, permissions=gate)
-        res = wt.write("src/new.py", "y = 2\n")
-        self.assertIsNone(res.get("error"))
-        self.assertEqual(res["bytes_written"], 6)
+    def test_protected_db_hard_guard(self):
+        from tools.permissions.pathpolicy import hard_write_guard
+        self.assertTrue(hard_write_guard(
+            os.path.join(self.root, "database", "knowledge.db"), self.root))
 
-    def test_write_blocked_without_gate_also_hard_guards_db(self):
-        wt = WriteTools(self.root)  # no gate
-        # hard guard applies even without a gate object
-        res = wt.write("database/knowledge.db", "bad")
-        self.assertIn("immutable", res["error"])
+    def test_blocked_db_zone_deny(self):
+        pp = PathPolicy(self.root)
+        res = pp.read_decision(
+            os.path.join(self.root, "database", "knowledge.db"))
+        self.assertEqual(res.kind.value, "deny")
+
+    def test_escape_raises_path_error(self):
+        from tools.permissions.fs import PathError
+        pp = PathPolicy(self.root)
+        with self.assertRaises(PathError):
+            pp.read_decision("../secret.txt")
 
 
 if __name__ == "__main__":

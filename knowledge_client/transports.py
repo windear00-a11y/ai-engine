@@ -32,8 +32,12 @@ from knowledge_client.errors import (
 __all__ = [
     "TransportProtocol",
     "InProcessTransport",
+    "MemoryInProcessTransport",
+    "MemorySessionTransport",
     "SessionTransport",
     "OneShotTransport",
+    "HttpTransport",
+    "HttpMemoryTransport",
 ]
 
 
@@ -102,6 +106,134 @@ class InProcessTransport:
                 closer()
             except Exception:  # noqa: BLE001 - close must not raise to the caller
                 pass
+
+
+class MemoryInProcessTransport:
+    """In-process transport for Memory v2 (per-project).
+
+    Uses api.memory_tools.MemoryToolInterface (v2 contract) directly.
+    """
+
+    def __init__(self, data_root: Optional[str] = None, interface: Any = None):
+        if interface is not None:
+            self._interface = interface
+        else:
+            from api.memory_tools import MemoryToolInterface
+            self._interface = MemoryToolInterface(data_root=data_root)
+        self._closed = False
+
+    def execute(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        if self._closed:
+            raise TransportError("memory in-process transport is closed")
+        try:
+            return self._interface.execute(request)
+        except KnowledgeClientError:
+            raise
+        except Exception as exc:
+            raise TransportError("memory in-process interface failed: %s" % exc) from exc
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        closer = getattr(self._interface, "close", None)
+        if closer is not None:
+            try:
+                closer()
+            except Exception:
+                pass
+
+
+class MemorySessionTransport:
+    """Persistent session transport for Memory v2 via python -m api.memory_session."""
+
+    def __init__(self, data_root: Optional[str] = None, python: Optional[str] = None,
+                 root: Optional[str] = None, wait_timeout: int = 120):
+        self.data_root = data_root
+        self.python = python or sys.executable
+        self.root = str(root or _project_root())
+        cmd = [self.python, "-m", "api.memory_session"]
+        if self.data_root:
+            cmd.extend(["--data-root", self.data_root])
+        try:
+            self._proc = subprocess.Popen(
+                cmd, cwd=self.root,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, bufsize=1)
+        except OSError as exc:
+            raise TransportError("could not spawn memory session: %s" % exc) from exc
+        assert self._proc.stdin is not None
+        assert self._proc.stdout is not None
+        assert self._proc.stderr is not None
+        self._wait_timeout = wait_timeout
+        self._closed = False
+        self._stderr_lines = []
+        threading.Thread(target=self._drain_stderr, daemon=True).start()
+
+    def execute(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        if self._closed:
+            raise TransportError("memory session is closed")
+        try:
+            payload_text = json.dumps(request)
+        except (TypeError, ValueError) as exc:
+            raise TransportError("request not JSON-serializable: %s" % exc) from exc
+        try:
+            assert self._proc.stdin is not None
+            assert self._proc.stdout is not None
+            self._proc.stdin.write(payload_text + "\n")
+            self._proc.stdin.flush()
+            line = self._proc.stdout.readline()
+        except (OSError, ValueError) as exc:
+            raise TransportError("memory session write/read failed: %s" % exc) from exc
+        if not line:
+            self._closed = True
+            raise TransportError("memory session ended unexpectedly; stderr: %s" % "".join(self._stderr_lines)[:300])
+        try:
+            payload = json.loads(line)
+        except ValueError:
+            raise InvalidResponseError("memory session emitted non-JSON: %r" % (line[:200],))
+        if not isinstance(payload, dict) or not isinstance(payload.get("ok"), bool):
+            raise InvalidResponseError("memory session non-conforming envelope: %r" % (payload,))
+        return payload
+
+    def close(self) -> None:
+        if getattr(self, "_pipes_closed", False):
+            return
+        self._closed = True
+        try:
+            assert self._proc.stdin is not None
+            self._proc.stdin.close()
+        except (OSError, ValueError):
+            pass
+        try:
+            self._proc.wait(timeout=self._wait_timeout)
+        except subprocess.TimeoutExpired:
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+                self._proc.wait()
+        for attr in ("stdout", "stderr"):
+            handle = getattr(self._proc, attr, None)
+            if handle is not None:
+                try:
+                    handle.close()
+                except (OSError, ValueError):
+                    pass
+        self._pipes_closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+        return False
+
+    def _drain_stderr(self):
+        assert self._proc.stderr is not None
+        for line in self._proc.stderr:
+            self._stderr_lines.append(line)
 
 
 class SessionTransport:
@@ -281,3 +413,57 @@ class OneShotTransport:
 
     def close(self) -> None:
         pass
+
+
+class HttpTransport:
+    """HTTP transport for Memory v2 (or v1) via http_server.
+
+    Sends POST to /v2/execute (or /v1/execute) with JSON envelope.
+    Uses stdlib http.client only, no external deps.
+    """
+
+    def __init__(self, host="127.0.0.1", port=8765, path="/v2/execute", api_key=None, timeout=10):
+        self.host = host
+        self.port = int(port)
+        self.path = path
+        self.api_key = api_key
+        self.timeout = timeout
+        self._closed = False
+
+    def execute(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        if self._closed:
+            raise TransportError("http transport is closed")
+        import http.client
+        import json as _json
+        try:
+            body = _json.dumps(request).encode("utf-8")
+        except Exception as exc:
+            raise TransportError("request not JSON-serializable: %s" % exc) from exc
+        headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
+        try:
+            conn = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
+            conn.request("POST", self.path, body=body, headers=headers)
+            resp = conn.getresponse()
+            raw = resp.read()
+            conn.close()
+        except Exception as exc:
+            raise TransportError("http request failed: %s" % exc) from exc
+        try:
+            payload = _json.loads(raw.decode("utf-8"))
+        except Exception:
+            raise InvalidResponseError("http returned non-JSON: %r" % (raw[:200],))
+        if not isinstance(payload, dict) or not isinstance(payload.get("ok"), bool):
+            raise InvalidResponseError("http returned non-conforming envelope: %r" % (payload,))
+        return payload
+
+    def close(self) -> None:
+        self._closed = True
+
+
+class HttpMemoryTransport(HttpTransport):
+    """Convenience for Memory v2: defaults to /v2/execute."""
+
+    def __init__(self, host="127.0.0.1", port=8765, api_key=None, timeout=10):
+        super().__init__(host=host, port=port, path="/v2/execute", api_key=api_key, timeout=timeout)

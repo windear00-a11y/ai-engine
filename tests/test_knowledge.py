@@ -9,7 +9,7 @@ from retrieval.knowledge import KnowledgeStore, VALID_TYPES
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 VALID_DIR = os.path.join(FIXTURES, "valid")
 INVALID_DIR = os.path.join(FIXTURES, "invalid")
-KNOWLEDGE_DIR = os.path.join(os.path.dirname(__file__), "..", "knowledge")
+KNOWLEDGE_DIR = os.path.join(FIXTURES, "knowledge_react")
 
 
 class TestLoadingKnowledge(unittest.TestCase):

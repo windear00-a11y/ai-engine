@@ -49,10 +49,8 @@ class RetrievalByContextTests(unittest.TestCase):
             snap = ContextSnapshot.build(
                 system={"os": os_name, "python": "3.11"},
                 project={"language": "python"},
-                task={"type": "bug_fix"}, temporal={})
-            snap = ContextSnapshot(
-                system=snap.system, project=snap.project, task=snap.task,
-                temporal=snap.temporal, context_id=cid, captured_at_epoch=0.0)
+                task={"type": "bug_fix"}, temporal={},
+                captured_at_epoch=0.0)
             self.cstore.save(snap)
 
         # two experiences: one in each context

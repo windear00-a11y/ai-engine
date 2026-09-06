@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from tools.permissions import Policy
 from tools.permissions.execution import check_args, run_checked, CommandDenied
-from tools.coding.exec_tools import ExecutionRunner
 
 
 def _policy():
@@ -98,19 +97,23 @@ class Slice4CApprovalTests(unittest.TestCase):
         root = tempfile.mkdtemp()
         self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
         for args in [["list"], ["freeze"], ["check"]]:
-            runner = ExecutionRunner(root, policy=pol, approver=lambda p: False)
-            r = runner.run("pip", args, cwd=".")
+            r = run_checked(pol, "pip", args, lambda p: False, cwd=root,
+                            workspace_root=root)
             self.assertIn("not approved", (r["error"] or "").lower())
             self.assertFalse(r["success"])
-            runner2 = ExecutionRunner(root, policy=pol, approver=lambda p: True)
-            r2 = runner2.run("pip", args, cwd=".")
+            r2 = run_checked(pol, "pip", args, lambda p: True, cwd=root,
+                             workspace_root=root)
             self.assertNotIn("denied", (r2["error"] or "").lower())
             self.assertNotIn("not approved", (r2["error"] or "").lower())
 
     def test_no_args_any_for_pip(self):
         pol = _policy()
-        wl = ExecutionRunner._default_allowlist()["pip"]["args"]
-        self.assertNotEqual(wl, "any")
+        spec = pol.command_spec("pip") or {}
+        forms = spec.get("forms") or []
+        self.assertTrue(forms)
+        for f in forms:
+            self.assertNotEqual(f.get("args"), "any")
+            self.assertIsNotNone(f.get("args"))
         # also ensure check_args still enforces exact forms (not any)
         with self.assertRaises(CommandDenied):
             check_args(pol, "pip", ["list", "freeze"])

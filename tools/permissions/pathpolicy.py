@@ -1,6 +1,6 @@
 """Path policy: deterministic zone classification on top of Workspace.
 
-Every path first passes through :meth:`tools.coding.fs.Workspace.resolve`,
+Every path first passes through :meth:`tools.permissions.fs.Workspace.resolve`,
 which is the single trust boundary for path confinement (traversal, absolute
 outside paths, symlink escapes). This module then classifies the RESOLVED
 absolute path into a zone and derives its protection mode.
@@ -21,7 +21,7 @@ directory and everything under it recursively.
 import fnmatch
 import os
 
-from tools.coding.fs import Workspace, PathError
+from tools.permissions.fs import Workspace, PathError
 from tools.permissions.decisions import (
     REASON_OUTSIDE_WORKSPACE,
     REASON_BLOCKED,

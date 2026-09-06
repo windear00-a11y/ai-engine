@@ -12,7 +12,10 @@ from retrieval.migration import migrate_json_to_sqlite
 from retrieval.knowledge import KnowledgeStore, VALID_TYPES
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-KNOWLEDGE_DIR = os.path.join(_ROOT, "knowledge")
+# Generic knowledge corpus (transport domain) used by migration tests. The
+# react corpus that previously lived at <repo>/knowledge is react/demo data,
+# retired with its domain in Phase 24.
+KNOWLEDGE_DIR = os.path.join(_ROOT, "tests", "fixtures", "knowledge_generic")
 
 
 def sample_node(nid, ntype="concept", rels=None):
@@ -255,31 +258,31 @@ class MigrationTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_migrate_real_knowledge(self):
+    def test_migrate_generic_corpus(self):
         summary = migrate_json_to_sqlite(KNOWLEDGE_DIR, self.db, clear=True)
         self.assertEqual(summary["errors"], [])
         self.assertEqual(summary["sources"], 4)
         self.assertEqual(summary["nodes"], 4)
-        self.assertEqual(summary["relationships"], 11)
+        self.assertEqual(summary["relationships"], 6)
 
         repo = KnowledgeRepository(self.db)
         repo.initialize()
-        # React retrievable
-        react = repo.get_node("react")
-        self.assertIsNotNone(react)
-        self.assertEqual(react["type"], "technology")
-        # React Component retrievable
-        rc = repo.get_node("react-component")
+        # Transport retrievable
+        transport = repo.get_node("transport")
+        self.assertIsNotNone(transport)
+        self.assertEqual(transport["type"], "technology")
+        # Transport Component retrievable
+        rc = repo.get_node("transport-component")
         self.assertIsNotNone(rc)
         self.assertEqual(rc["type"], "concept")
         # relationships present
-        rels = {r["type"]: r["target"] for r in repo.relationships_of("react-component")}
-        self.assertEqual(rels["instance_of"], "react")
+        rels = {r["type"]: r["target"] for r in repo.relationships_of("transport-component")}
+        self.assertEqual(rels["instance_of"], "transport")
         # follow works
-        followed = repo.follow("react-component", rel_type="instance_of")
-        self.assertEqual(followed[0][1]["id"], "react")
+        followed = repo.follow("transport-component", rel_type="instance_of")
+        self.assertEqual(followed[0][1]["id"], "transport")
         self.assertEqual(repo.count_nodes(), 4)
-        self.assertEqual(repo.count_relationships(), 11)
+        self.assertEqual(repo.count_relationships(), 6)
 
     def test_migrated_knowledge_works_with_tools(self):
         migrate_json_to_sqlite(KNOWLEDGE_DIR, self.db, clear=True)
@@ -287,11 +290,11 @@ class MigrationTests(unittest.TestCase):
         store = KnowledgeStore(db_path=self.db).load_from_repository()
         from tools.knowledge_tools import KnowledgeTools
         tools = KnowledgeTools(store=store)
-        self.assertTrue(tools.get("react")["found"])
-        res = tools.search("react component")
+        self.assertTrue(tools.get("transport")["found"])
+        res = tools.search("transport component")
         self.assertGreater(res["count"], 0)
-        follow = tools.follow("react-component", rel_type="instance_of")
-        self.assertIn("react", {n["id"] for n in follow["nodes"]})
+        follow = tools.follow("transport-component", rel_type="instance_of")
+        self.assertIn("transport", {n["id"] for n in follow["nodes"]})
 
 
 class RealArtifactTests(unittest.TestCase):

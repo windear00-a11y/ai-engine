@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from tools.permissions import Policy
 from tools.permissions.execution import check_args, run_checked, CommandDenied
-from tools.coding.exec_tools import ExecutionRunner
 
 
 def _policy():
@@ -120,45 +119,41 @@ class Slice4AApprovalRequiredTests(unittest.TestCase):
             ("black", ["--check", "."]),
             ("isort", ["--check-only", "."]),
         ]:
-            runner = ExecutionRunner(root, policy=pol, approver=lambda p: False)
-            r = runner.run(cmd, args, cwd=".")
+            r = run_checked(pol, cmd, args, lambda p: False, cwd=root,
+                            workspace_root=root)
             self.assertIn("not approved", r["error"].lower() if r["error"] else "")
             self.assertFalse(r["success"])
-            # with approver True, should not be denied (may fail to execute if binary missing, but not denied)
-            runner2 = ExecutionRunner(root, policy=pol, approver=lambda p: True)
-            r2 = runner2.run(cmd, args, cwd=".")
-            # Should not be "denied" or "not approved" — may be "failed to execute" if binary absent, that's ok
+            # with approve=True, should not be denied (may fail to execute if
+            # binary missing, but not denied)
+            r2 = run_checked(pol, cmd, args, lambda p: True, cwd=root,
+                             workspace_root=root)
+            # Should not be "denied" or "not approved" — may be "failed to
+            # execute" if binary absent, that's ok
             self.assertNotIn("denied", (r2["error"] or "").lower())
             self.assertNotIn("not approved", (r2["error"] or "").lower())
 
 
-class Slice4ALegacyPythonArgsAnyInvestigation(unittest.TestCase):
-    """Investigate legacy Python args="any" — do not silently change compatibility.
+class Slice4AClosedFormsInvestigation(unittest.TestCase):
+    """The legacy coding facade used a Python args="any" allowlist escape hatch.
 
-    Current behavior: ExecutionRunner._default_allowlist uses args="any" for python,
-    but hardened check_args restricts to closed forms. Legacy mode (no policy) preserves
-    backward compatibility for older tests without permission object.
-    This test documents the current state and reports whether it should be addressed.
+    Phase 24 removes that facade; the Policy command specs are now the single
+    source of truth. Every allowed command uses CLOSED arg forms (no
+    wildcard "any"), so the legacy gap is closed rather than silently kept.
     """
-    def test_legacy_python_any_preserved(self):
-        runner = ExecutionRunner(tempfile.mkdtemp())
-        # Legacy mode: python with arbitrary -m should be allowed via "any"
-        # (but without policy, is_allowed only checks name, not args)
-        self.assertTrue(runner.is_allowed("python"))
-        # In legacy run, arbitrary args are allowed (since args="any")
-        # We verify hardened still denies -c
+
+    def test_no_wildcard_any_forms_remain(self):
         pol = _policy()
-        with self.assertRaises(CommandDenied):
-            check_args(pol, "python", ["-c", "print(1)"])
-        # Report: legacy "any" should be addressed separately (follow-up) to close
-        # the gap between legacy and hardened. For Slice 4A we do NOT change it
-        # to avoid breaking older tests that rely on legacy "any" for python.
-        # This investigation PASS means we have not silently changed it.
-        self.assertEqual(ExecutionRunner._default_allowlist()["python"]["args"], "any")
-        self.assertEqual(ExecutionRunner._default_allowlist()["python3"]["args"], "any")
-        # New commands must NOT use "any"
-        for name in ("flake8", "ruff", "black", "isort"):
-            self.assertNotEqual(ExecutionRunner._default_allowlist()[name]["args"], "any")
+        for name in ("python", "python3", "flake8", "ruff", "black",
+                     "isort", "npm"):
+            spec = pol.command_spec(name) or {}
+            forms = spec.get("forms") or []
+            self.assertTrue(forms, name)
+            for f in forms:
+                self.assertIsNotNone(f.get("args"), name)
+                self.assertNotEqual(f.get("args"), "any", name)
+        # git / make have no closed form at all -> denied (deny-by-default)
+        self.assertIsNone(pol.command_spec("git"))
+        self.assertIsNone(pol.command_spec("make"))
 
 
 if __name__ == "__main__":

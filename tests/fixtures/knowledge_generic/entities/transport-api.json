@@ -1,0 +1,10 @@
+{
+  "id": "transport-api",
+  "name": "Transport API",
+  "type": "entity",
+  "description": "Public API surface of the transport layer.",
+  "relationships": [
+    { "type": "instance_of", "target": "transport", "label": "belongs to" },
+    { "type": "related_to", "target": "read-transport", "label": "served by" }
+  ]
+}

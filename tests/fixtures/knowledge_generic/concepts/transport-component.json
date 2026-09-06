@@ -1,0 +1,9 @@
+{
+  "id": "transport-component",
+  "name": "Transport Component",
+  "type": "concept",
+  "description": "A reusable component of the transport layer.",
+  "relationships": [
+    { "type": "instance_of", "target": "transport", "label": "part of" }
+  ]
+}
