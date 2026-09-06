@@ -169,6 +169,35 @@ def list_known_dbs():
 
 
 # ---------------------------------------------------------------------------
+# Legacy global database directory (Phase-24 compatibility authority)
+# ---------------------------------------------------------------------------
+
+def get_legacy_database_dir():
+    """Absolute path of the legacy global ``<repo>/database`` directory.
+
+    This is the historical (pre per-project-isolation) location that v1
+    tooling and legacy store defaults referenced directly. Everything that
+    still needs that path must resolve it through this single authority so
+    the value is provably equal to the old defaults everywhere.
+    """
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "database"
+    )
+
+
+def get_legacy_db_path(db_name):
+    """Legacy global ``<repo>/database/<db_name>`` (compat default only).
+
+    ``db_name`` must be one of ``_KNOWN_DBS``. Exists purely as a
+    compatibility default for v1 tooling; the primary API is per-project
+    ``get_db_path``.
+    """
+    if db_name not in _KNOWN_DBS:
+        raise ValueError(f"unknown db_name {db_name!r}: must be one of {_KNOWN_DBS}")
+    return os.path.join(get_legacy_database_dir(), db_name)
+
+
+# ---------------------------------------------------------------------------
 # Minimal project-registry foundation (Phase 0, no user/account system)
 # ---------------------------------------------------------------------------
 

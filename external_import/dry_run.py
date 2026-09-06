@@ -20,9 +20,7 @@ from external_import.validator import (
     validate_external,
     ExternalValidationResult,
 )
-
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_KNOWLEDGE_DB = os.path.join(_ROOT, "database", "knowledge.db")
+from retrieval.repository import DEFAULT_KNOWLEDGE_DB
 
 
 def _content_hash(data):

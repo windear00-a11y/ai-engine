@@ -18,8 +18,9 @@ DELETE.
 """
 
 import json
-import os
 import sqlite3
+
+from ai_engine.paths import get_legacy_db_path
 
 _DEFAULT_EXPERIENCE_DB = None
 
@@ -27,10 +28,7 @@ _DEFAULT_EXPERIENCE_DB = None
 def default_experience_db_path():
     global _DEFAULT_EXPERIENCE_DB
     if _DEFAULT_EXPERIENCE_DB is None:
-        _ROOT = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        _DEFAULT_EXPERIENCE_DB = os.path.join(_ROOT, "database",
-                                              "experience.db")
+        _DEFAULT_EXPERIENCE_DB = get_legacy_db_path("experience.db")
     return _DEFAULT_EXPERIENCE_DB
 
 

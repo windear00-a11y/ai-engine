@@ -27,15 +27,15 @@ import json
 import os
 import sqlite3
 
+from ai_engine.paths import get_legacy_db_path
+
 _DEFAULT_CONTEXT_DB = None
 
 
 def default_context_db_path():
     global _DEFAULT_CONTEXT_DB
     if _DEFAULT_CONTEXT_DB is None:
-        _ROOT = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        _DEFAULT_CONTEXT_DB = os.path.join(_ROOT, "database", "context.db")
+        _DEFAULT_CONTEXT_DB = get_legacy_db_path("context.db")
     return _DEFAULT_CONTEXT_DB
 
 

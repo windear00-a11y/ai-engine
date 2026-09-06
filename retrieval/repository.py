@@ -28,13 +28,15 @@ SQL. Writes use explicit transactions so a failed import rolls back cleanly.
 """
 
 import json
-import os
 import sqlite3
 import time
 from contextlib import contextmanager
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_KNOWLEDGE_DB = os.path.join(_ROOT, "database", "knowledge.db")
+from ai_engine.paths import get_legacy_db_path
+
+# Legacy v1-compatible default (single global database, Phase-0 era).
+# The canonical per-project authority is ai_engine.paths.get_db_path.
+DEFAULT_KNOWLEDGE_DB = get_legacy_db_path("knowledge.db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (

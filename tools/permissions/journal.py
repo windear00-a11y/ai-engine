@@ -22,15 +22,15 @@ import os
 import sqlite3
 import time
 
+from ai_engine.paths import get_legacy_db_path
+
 DEFAULT_STATE_DB = None
 
 
 def _default_state_db():
     global DEFAULT_STATE_DB
     if DEFAULT_STATE_DB is None:
-        root = os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))))
-        DEFAULT_STATE_DB = os.path.join(root, "database", "engine_state.db")
+        DEFAULT_STATE_DB = get_legacy_db_path("engine_state.db")
     return DEFAULT_STATE_DB
 
 

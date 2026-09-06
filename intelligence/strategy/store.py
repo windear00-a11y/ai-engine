@@ -14,6 +14,7 @@ import json
 import os
 import sqlite3
 
+from ai_engine.paths import get_legacy_db_path
 from .schema import Strategy
 
 _DEFAULT_EVIDENCE_DB = None
@@ -22,9 +23,7 @@ _DEFAULT_EVIDENCE_DB = None
 def default_evidence_db_path():
     global _DEFAULT_EVIDENCE_DB
     if _DEFAULT_EVIDENCE_DB is None:
-        _ROOT = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        _DEFAULT_EVIDENCE_DB = os.path.join(_ROOT, "database", "evidence.db")
+        _DEFAULT_EVIDENCE_DB = get_legacy_db_path("evidence.db")
     return _DEFAULT_EVIDENCE_DB
 
 

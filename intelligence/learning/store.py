@@ -5,14 +5,13 @@ in the learning_events table.
 """
 
 import json
-import os
 import sqlite3
+
+from ai_engine.paths import get_legacy_db_path
 
 
 def default_evidence_db_path():
-    _ROOT = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(_ROOT, "database", "evidence.db")
+    return get_legacy_db_path("evidence.db")
 
 
 _SCHEMA = """
