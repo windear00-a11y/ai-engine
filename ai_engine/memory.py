@@ -262,12 +262,9 @@ class Memory:
         experience = []
         try:
             from intelligence.experience.store import ExperienceStore
-            estore = ExperienceStore(db_path=self._evidence_db.replace("evidence.db", "experience.db") if "evidence.db" in self._evidence_db else None)
-            # Fallback: try per-project experience.db via path helper
-            if not os.path.exists(estore.db_path):
-                from ai_engine.paths import get_experience_db
-                estore.close()
-                estore = ExperienceStore(db_path=get_experience_db(self.project_id, self.data_root))
+            from ai_engine.paths import get_experience_db
+            estore = ExperienceStore(
+                db_path=get_experience_db(self.project_id, self.data_root))
             # Retrieve all, then score
             all_exps = estore.all()
             # Filter synthetic (Phase 13 protection)

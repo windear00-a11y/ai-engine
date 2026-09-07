@@ -12,6 +12,14 @@ intentionally small:
 * returns the engine's plain, JSON-serializable dicts/lists unchanged
   (no custom object graph, no copied data).
 
+> **Note:** this package also ships a v2 client. `MemoryClient`
+> (`knowledge_client.memory_client`) issues the v2 operations (`remember`,
+> `recall`, `get`, `provenance`, `inspect`, `context.get`, `lifecycle.*`)
+> against Public Contract v2 (see `docs/public-contract.md`) via the v2
+> transports (`MemoryInProcessTransport`, `MemorySessionTransport`,
+> `HttpMemoryTransport`). The v1 `KnowledgeClient` below is frozen and
+> unchanged.
+
 ## Install / import
 
 Stdlib only — no third-party dependencies. Add this repository to your path

@@ -8,6 +8,15 @@
 
 ---
 
+> **Errata (addendum, historical record):** this milestone's "PRAGMA foreign
+> keys OFF at runtime" claims (lines 29, 314, 328, 868) are **incorrect**.
+> `retrieval/repository.py` enables `PRAGMA foreign_keys=ON` on every
+> `KnowledgeRepository` connection (verified by `docs/SAFETY-AUDIT-phase0.5.md`
+> and `tests/test_sqlite_repository.py`). The milestone describes planned work;
+> the shipped implementation enforces foreign keys.
+
+---
+
 ## A. Already Implemented
 
 ### A1. Core Data Model (Repository Layer)

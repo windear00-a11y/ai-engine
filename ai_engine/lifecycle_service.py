@@ -2403,9 +2403,9 @@ class LifecycleService:
             "confidence_label": confidence_label(
                 entry.get("provenance", {}).get("confidence")
                 if entry.get("provenance") else None),
-            "context_id": entry.get("provenance", {}).get("context_id"),
-            "derived_from": list(entry.get("provenance", {}).get(
-                "derived_from") or ()) or (entry.get("derived_from") or []),
+            "context_id": entry.get("context_id"),
+            "derived_from": list(entry.get("derived_from") or ()) or (
+                entry.get("derived_from") or []),
             "parent_record_ids": list(entry.get("provenance", {}).get(
                 "parent_record_ids") or ()) or
                 (entry.get("parent_record_ids") or []),
