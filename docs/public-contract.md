@@ -22,7 +22,7 @@
 ### 1.2 Contract v2 (`api/contract_v2.py`)
 
 * `CONTRACT_VERSION = "2"` — additive generic Memory contract.
-* Operations (inventory, exactly fourteen):
+* Operations (inventory, exactly seventeen):
 
 | Operation | Required args | Optional args |
 | --- | --- | --- |
@@ -40,6 +40,9 @@
 | `lifecycle.describe` | `record_id` | `role`, `project_id` |
 | `lifecycle.summary` | — | `project_id` |
 | `lifecycle.plan` | `situation` (non-empty string), `experience_ids` (list) | `context_id`, `constraints` (object), `max_steps` (positive int), `min_samples` (positive int), `project_id` |
+| `lifecycle.grant` | `plan_id`, `plan_step_ids` (non-empty list), `actor` (non-empty string) | `mechanism`, `evidence_ids` (list), `project_id` |
+| `lifecycle.authorize` | `plan_id`, `plan_step_ids` (non-empty list), `actor` (non-empty string) | `policy` (object), `request_ref`, `project_id` |
+| `lifecycle.execute` | `plan_id`, `plan_step_id`, `actor` (non-empty strings) | `request_id`, `policy` (object), `executors` (object), `project_id` |
 
 * `project_id` matches `^[a-z0-9_-]{1,64}$`; default project is `"default"`.
 * `vocabulary_id` is accepted on read ops for capture-consistency but does not
@@ -80,6 +83,20 @@
     boundary — no action is executed. All records carry `derived_from`
     provenance linking plan → decision → reasoning → strategy application →
     strategy. Deterministic across repeated calls with the same project.
+  * `lifecycle.grant` → `{grant_id, plan_id, plan_step_ids, actor, mechanism,
+    state: "approved", project_id, role: "authorization"}` — explicit, audited
+    approval (idempotent; duplicate grants return `duplicate: true`).
+  * `lifecycle.authorize` → `{authority_id, plan_id, plan_step_ids, actor,
+    decision, per_step, project_id, role: "authority"}` — deterministic
+    authority evaluation that persists an `authority` record. `decision` is one
+    of `approved`, `denied`, `requires_approval`, `invalid_plan`,
+    `invalid_step`, or `unknown`; `unknown` is never approval and never
+    permits execution.
+  * `lifecycle.execute` → the safe `action` attempt record
+    (`{action_id, plan_id, plan_step_id, actor, authority_decision,
+    execution_status, registered_effect, observation_ids, ...}`). Authority is
+    evaluated first: anything other than `approved` produces a `denied` action
+    that never reaches the effect layer.
 * `remember` records the full pipeline in one commit:
   *remember → activity → context → knowledge node → evidence*. Outcome /
   experience / strategy are produced by the (internal) intelligence layer, not

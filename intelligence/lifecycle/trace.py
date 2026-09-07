@@ -81,6 +81,19 @@ def normalize_entry(record) -> dict:
         or record.get("strategy_application_id"),
         "applicable_strategy_id": content.get("applicable_strategy_id")
         or record.get("applicable_strategy_id"),
+        "plan_id": content.get("plan_id") or record.get("plan_id"),
+        "plan_step_id": (content.get("plan_step_id")
+                         or record.get("plan_step_id")),
+        "authority_id": content.get("authority_id")
+        or record.get("authority_id"),
+        "action_id": content.get("action_id") or record.get("action_id"),
+        "verification_id": (content.get("verification_id")
+                            or record.get("verification_id")),
+        "observation_ids": list(content.get("observation_ids")
+                                or content.get("observation_references")
+                                or record.get("observation_ids") or ()),
+        "expectations": (content.get("expectations")
+                         or content.get("expected_conditions") or {}),
         "experience_ids": list(content.get("experience_ids")
                                or content.get("supporting_experience_ids")
                                or record.get("experience_ids") or ()),
@@ -99,6 +112,11 @@ def _role_default_origin(role):
         "reasoning": "derived",
         "decision": "derived",
         "plan": "derived",
+        "authority": "derived",
+        "authorization": "user_provided",
+        "action": "observed",
+        "observation": "observed",
+        "verification": "derived",
         "learning": "derived",
         "experience": "observed",
         "outcome": "observed",
@@ -161,6 +179,7 @@ def derive_child_links(entry, accessor) -> list:
         for cid in sorted(entry.get("parent_record_ids") or ()):
             add("from_record", "source_record", cid)
     elif role == "outcome":
+        add("based_on_verification", "verification", entry.get("verification_id"))
         for cid in sorted(entry.get("evidence_ids") or ()):
             add("verified_by", "evidence", cid)
         for cid in sorted(entry.get("parent_record_ids") or ()):
@@ -212,6 +231,31 @@ def derive_child_links(entry, accessor) -> list:
         for cid in sorted(set(entry.get("derived_from") or ())):
             add("derived_from", "decision", cid)
         add("based_on_decision", "decision", entry.get("decision_id"))
+
+    # Phase 29 execution chain: plan -> authority/approval -> action ->
+    # observation -> verification -> outcome -> experience.
+    elif role == "authority":
+        for cid in sorted(set(entry.get("derived_from") or ())
+                          | set(entry.get("parent_record_ids") or ())):
+            add("based_on_plan", "plan", cid)
+    elif role == "authorization":
+        for cid in sorted(entry.get("parent_record_ids") or ()):
+            add("grants_plan", "plan", cid)
+    elif role == "action":
+        add("based_on_plan", "plan", entry.get("plan_id"))
+        add("approved_by", "authority", entry.get("authority_id"))
+        for cid in sorted(entry.get("evidence_ids") or ()):
+            add("supported_by", "evidence", cid)
+    elif role == "observation":
+        add("of_action", "action", entry.get("action_id"))
+        for cid in sorted(entry.get("evidence_ids") or ()):
+            add("supported_by", "evidence", cid)
+    elif role == "verification":
+        add("of_action", "action", entry.get("action_id"))
+        for cid in sorted(entry.get("observation_ids") or ()):
+            add("from_observation", "observation", cid)
+        for cid in sorted(entry.get("evidence_ids") or ()):
+            add("supported_by", "evidence", cid)
 
     # Dedupe (relation, role, id) while preserving the deterministic order.
     seen = set()

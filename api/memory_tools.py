@@ -168,6 +168,27 @@ class MemoryToolInterface:
             max_steps=max_steps, min_samples=min_samples,
             project_id=project_id)
 
+    def _op_lifecycle_grant(self, plan_id, plan_step_ids, actor,
+                            mechanism=None, evidence_ids=None, project_id=None):
+        return self._api.lifecycle_grant(
+            plan_id=plan_id, plan_step_ids=plan_step_ids, actor=actor,
+            mechanism=mechanism, evidence_ids=evidence_ids,
+            project_id=project_id)
+
+    def _op_lifecycle_authorize(self, plan_id, plan_step_ids, actor,
+                                policy=None, request_ref=None, project_id=None):
+        return self._api.lifecycle_authorize(
+            plan_id=plan_id, plan_step_ids=plan_step_ids, actor=actor,
+            policy=policy, request_ref=request_ref, project_id=project_id)
+
+    def _op_lifecycle_execute(self, plan_id, plan_step_id, actor,
+                              request_id=None, policy=None, executors=None,
+                              project_id=None):
+        return self._api.lifecycle_execute(
+            plan_id=plan_id, plan_step_id=plan_step_id, actor=actor,
+            request_id=request_id, policy=policy, executors=executors,
+            project_id=project_id)
+
 
 def execute(request, data_root=None):
     iface = MemoryToolInterface(data_root=data_root)

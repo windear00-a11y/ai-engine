@@ -279,7 +279,7 @@ class Phase28EngineModelTests(unittest.TestCase):
         from ai_engine.action_boundary import (
             BOUNDARY_STAGES, PHASE_29_IMPLEMENTED, ActionRequest,
             ActionStep)
-        self.assertIs(PHASE_29_IMPLEMENTED, False)
+        self.assertIs(PHASE_29_IMPLEMENTED, True)
         self.assertEqual(BOUNDARY_STAGES,
                          ("ACTION", "OBSERVATION", "VERIFICATION", "OUTCOME"))
         step = ActionStep(plan_id="pl_1", step_id="pls_1", action="noop")
@@ -294,8 +294,13 @@ class Phase28EngineModelTests(unittest.TestCase):
             "from ai_engine.reasoning import reason, derive_reasoning_id\n"
             "from ai_engine.decision import make_decision, derive_decision_id\n"
             "from ai_engine.plan import build_plan, derive_plan_step_id\n"
+            "from ai_engine.authority import evaluate_authority, "
+            "derive_authority_id\n"
+            "from ai_engine.action import execute_effect, derive_action_id\n"
+            "from ai_engine.observation import derive_observation_id\n"
+            "from ai_engine.verification import verify, derive_verification_id\n"
             "from ai_engine.action_boundary import PHASE_29_IMPLEMENTED\n"
-            "assert PHASE_29_IMPLEMENTED is False\n"
+            "assert PHASE_29_IMPLEMENTED is True\n"
             "print('PURE_OK')\n"
         )
         r = subprocess.run([sys.executable, "-c", code],
@@ -303,7 +308,9 @@ class Phase28EngineModelTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("PURE_OK", r.stdout)
         for file_name in ("strategy_application.py", "reasoning.py",
-                          "decision.py", "plan.py", "action_boundary.py"):
+                          "decision.py", "plan.py", "authority.py",
+                          "action.py", "observation.py", "verification.py",
+                          "action_boundary.py"):
             text = os.path.join(_ROOT, "ai_engine", file_name)
             with open(text) as f:
                 source = f.read()

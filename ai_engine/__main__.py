@@ -337,6 +337,29 @@ def cmd_lifecycle_plan(args):
     return 0
 
 
+def cmd_lifecycle_execute(args):
+    project_id = getattr(args, "project", None) or "default"
+    from ai_engine.lifecycle_service import LifecycleService
+    svc = LifecycleService(project_id=project_id)
+    try:
+        result = svc.request_action(
+            args.plan_id, args.plan_step_id, args.actor,
+            request_id=getattr(args, "request_id", None))
+    except ValueError as e:
+        return fail("invalid_argument", str(e))
+    if getattr(args, "json", False):
+        print(to_json(result))
+    else:
+        print("action %s [%s] authority=%s decisions=%s" % (
+            result["action_id"], result["execution_status"],
+            result["authority_decision"], result.get("executed")))
+        if result.get("observation_ids"):
+            print("  observations: %s" % ", ".join(result["observation_ids"]))
+        if result.get("duplicate"):
+            print("  duplicate request (idempotent)")
+    return 0
+
+
 def cmd_context_show(args):
     project_id = getattr(args, "project", None) or "default"
     context_id = args.context_id
@@ -847,6 +870,14 @@ def main(argv=None):
     lc8.add_argument("--project", dest="project", default=None, help="project id")
     lc8.add_argument("--json", dest="json", action="store_true", help="JSON output")
     lc8.set_defaults(func=cmd_lifecycle_plan)
+    lc9 = lc_sub.add_parser("execute", help="execute one plan step (authority-gated action)")
+    lc9.add_argument("plan_id", help="plan id")
+    lc9.add_argument("plan_step_id", help="plan step id")
+    lc9.add_argument("actor", help="requesting actor")
+    lc9.add_argument("--request-id", dest="request_id", default=None, help="distinct request id for re-execution")
+    lc9.add_argument("--project", dest="project", default=None, help="project id")
+    lc9.add_argument("--json", dest="json", action="store_true", help="JSON output")
+    lc9.set_defaults(func=cmd_lifecycle_execute)
 
     # status
     p = sub.add_parser("status", help="project status")

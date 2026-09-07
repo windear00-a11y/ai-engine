@@ -12,7 +12,10 @@ Single lifecycle grammar shared by every intelligence record::
         -> STRATEGY APPLICATION
         -> REASONING / DECISION
         -> PLAN
+        -> AUTHORITY / APPROVAL
         -> ACTION
+        -> OBSERVATION
+        -> VERIFICATION
         -> OUTCOME
         -> EVIDENCE
         -> EXPERIENCE (loop)
@@ -90,6 +93,11 @@ class RecordRole(str, Enum):
     REASONING = "reasoning"
     DECISION = "decision"
     PLAN = "plan"
+    AUTHORITY = "authority"
+    AUTHORIZATION = "authorization"
+    ACTION = "action"
+    OBSERVATION = "observation"
+    VERIFICATION = "verification"
 
 
 class LifecycleState(str, Enum):
@@ -168,6 +176,16 @@ _ROLE_ORIGINS: dict = {
     RecordRole.REASONING: {Origin.DERIVED},
     RecordRole.DECISION: {Origin.DERIVED},
     RecordRole.PLAN: {Origin.DERIVED},
+    # Phase 29 — Authority/approval boundary. AUTHORITY is a derived
+    # evaluation; AUTHORIZATION is an explicit approval grant made by a
+    # user/authorizer or conferred by the system; ACTION and OBSERVATION are
+    # records of what was attempted / what happened (observed); VERIFICATION
+    # is a derived evaluation. None of these carry EXTERNAL.
+    RecordRole.AUTHORITY: {Origin.DERIVED},
+    RecordRole.AUTHORIZATION: {Origin.USER_PROVIDED, Origin.SYSTEM_DEFINED},
+    RecordRole.ACTION: {Origin.OBSERVED},
+    RecordRole.OBSERVATION: {Origin.OBSERVED},
+    RecordRole.VERIFICATION: {Origin.DERIVED},
 }
 
 # Markers used by classify_origin to infer an origin from a source string.

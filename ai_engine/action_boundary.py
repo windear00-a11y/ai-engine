@@ -1,14 +1,15 @@
-"""Action / Observation / Verification / Outcome boundary (Phase 28).
+"""Action / Observation / Verification / Outcome boundary (Phase 28 + 29).
 
-Phase 28 deliberately defines the contracts for the later stages WITHOUT
-implementing them. Phase 29 owns their implementation. Nothing here may bypass
-the existing trust/authority architecture: every ACTION consumes an approved
-Plan step; OBSERVATION records what actually happened; VERIFICATION determines
-whether the expected result was satisfied from evidence; OUTCOME records the
-verified result.
+Phase 28 defined the contracts for the later stages WITHOUT implementing
+them. Phase 29 supplies their canonical implementation (authority.py,
+action.py, observation.py, verification.py plus the LifecycleService
+execution methods). Nothing may bypass the trust/authority architecture:
+every ACTION consumes an approved Plan step; OBSERVATION records what
+actually happened; VERIFICATION determines whether the expected result was
+satisfied from evidence; OUTCOME records the verified result.
 
-These are pure contract dataclasses only -- no execution logic is provided and
-``PHASE_29_IMPLEMENTED`` is False until Phase 29 supplies real implementation.
+These are pure contract dataclasses only. ``PHASE_29_IMPLEMENTED`` is True
+because Phase 29 supplies the real canonical implementation.
 """
 
 from dataclasses import dataclass, field
@@ -16,7 +17,7 @@ from typing import Optional
 
 BOUNDARY_STAGES = ("ACTION", "OBSERVATION", "VERIFICATION", "OUTCOME")
 
-PHASE_29_IMPLEMENTED = False
+PHASE_29_IMPLEMENTED = True
 
 
 @dataclass(frozen=True)

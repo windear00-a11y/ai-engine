@@ -280,3 +280,44 @@ class MemoryAPI:
                 project_id=project_id)
         except ValueError as exc:
             raise self._lifecycle_error(exc)
+
+    # -- Phase 29: safe action / observation / verification loop ---------
+
+    def lifecycle_grant(self, plan_id, plan_step_ids, actor, mechanism=None,
+                        evidence_ids=None, project_id=None):
+        """Explicit, audited approval grant for plan steps (authorization)."""
+        svc = self._lifecycle_for(project_id)
+        try:
+            return svc.grant_approval(
+                plan_id=plan_id, plan_step_ids=plan_step_ids, actor=actor,
+                mechanism=mechanism or "explicit_user_approval",
+                evidence_ids=evidence_ids or (), project_id=project_id)
+        except ValueError as exc:
+            raise self._lifecycle_error(exc)
+
+    def lifecycle_authorize(self, plan_id, plan_step_ids, actor, policy=None,
+                            request_ref=None, project_id=None):
+        """Deterministic authority evaluation for plan steps (recorded)."""
+        svc = self._lifecycle_for(project_id)
+        try:
+            return svc.evaluate_authority(
+                plan_id=plan_id, plan_step_ids=plan_step_ids, actor=actor,
+                policy=policy, project_id=project_id, request_ref=request_ref)
+        except ValueError as exc:
+            raise self._lifecycle_error(exc)
+
+    def lifecycle_execute(self, plan_id, plan_step_id, actor, request_id=None,
+                          policy=None, executors=None, project_id=None):
+        """Execute one plan step through the narrow effect-executor boundary.
+
+        Authority is evaluated first; anything other than APPROVED yields a
+        DENIED action that never reaches the effect layer.
+        """
+        svc = self._lifecycle_for(project_id)
+        try:
+            return svc.request_action(
+                plan_id=plan_id, plan_step_id=plan_step_id, actor=actor,
+                request_id=request_id, policy=policy, executors=executors,
+                project_id=project_id)
+        except ValueError as exc:
+            raise self._lifecycle_error(exc)

@@ -59,6 +59,10 @@ def _is_list(v):
 def _is_string_or_none(v):
     return v is None or isinstance(v, str)
 
+def _is_nonempty_string_list(v):
+    return (isinstance(v, list) and bool(v)
+            and all(isinstance(x, str) and x.strip() for x in v))
+
 # Operation specifications: required and optional validators
 # For remember we use generic payload (arbitrary structured memory payload).
 # Detailed type/relationship/vocabulary checks are done by Memory (which returns invalid_argument).
@@ -189,13 +193,52 @@ OPERATIONS = {
             "project_id": _is_project_id,
         },
     },
+    # -- Phase 29: safe action / observation / verification loop --
+    "lifecycle.grant": {
+        "required": {
+            "plan_id": _is_nonempty_string,
+            "plan_step_ids": _is_nonempty_string_list,
+            "actor": _is_nonempty_string,
+        },
+        "optional": {
+            "mechanism": _is_string_or_none,
+            "evidence_ids": _is_list,
+            "project_id": _is_project_id,
+        },
+    },
+    "lifecycle.authorize": {
+        "required": {
+            "plan_id": _is_nonempty_string,
+            "plan_step_ids": _is_nonempty_string_list,
+            "actor": _is_nonempty_string,
+        },
+        "optional": {
+            "policy": _is_dict,
+            "request_ref": _is_string_or_none,
+            "project_id": _is_project_id,
+        },
+    },
+    "lifecycle.execute": {
+        "required": {
+            "plan_id": _is_nonempty_string,
+            "plan_step_id": _is_nonempty_string,
+            "actor": _is_nonempty_string,
+        },
+        "optional": {
+            "request_id": _is_string_or_none,
+            "policy": _is_dict,
+            "executors": _is_dict,
+            "project_id": _is_project_id,
+        },
+    },
 }
 
 DEFAULT_OPERATION_ORDER = (
     "remember", "recall", "get", "provenance", "inspect", "context.get",
     "lifecycle.ingest", "lifecycle.experience", "lifecycle.learning",
     "lifecycle.strategy", "lifecycle.trace", "lifecycle.describe",
-    "lifecycle.summary", "lifecycle.plan",
+    "lifecycle.summary", "lifecycle.plan", "lifecycle.grant",
+    "lifecycle.authorize", "lifecycle.execute",
 )
 
 MAX_RESULTS = 100

@@ -12,8 +12,18 @@ Canonical lifecycle (single, deterministic)::
 
     INFORMATION -> SOURCE/ORIGIN -> SOURCE RECORD -> STRUCTURED MEMORY
         -> KNOWLEDGE and/or EXPERIENCE -> LEARNING -> STRATEGY
-        -> REASONING/DECISION -> ACTION -> OUTCOME -> EVIDENCE
-        -> EXPERIENCE (loop)
+        -> STRATEGY APPLICATION -> REASONING/DECISION -> PLAN
+        -> AUTHORITY / APPROVAL -> ACTION -> OBSERVATION -> VERIFICATION
+        -> OUTCOME -> EVIDENCE -> EXPERIENCE (loop)
+
+Phase 29 (safe action, observation & verification loop) is implemented through
+this facade: explicit approval grants (``grant_approval``), deterministic
+authority evaluation (``evaluate_authority``), the narrow Effect Executor
+boundary (``request_action``), observation recording (``record_observation``),
+deterministic verification (``verify_action``), verified outcome
+(``finalize_action``) and the full chained end-to-end path
+(``execute_plan``). Unapproved / unknown actions never reach the effect layer
+and caller success claims are never treated as verification evidence.
 
 Trust boundary (Rule 1): EXTERNAL knowledge is advisory and grounded to its
 source; it is recorded as knowledge and never becomes an experience/strategy
@@ -62,6 +72,37 @@ from intelligence.outcome.types import OutcomeClassification, classify_outcome
 from intelligence.strategy.schema import Strategy
 from intelligence.strategy.store import StrategyStore
 
+from ai_engine.action import (
+    DENIED,
+    execute_effect,
+    action_status_from_effect,
+    derive_action_id,
+    derive_default_request_id,
+)
+from ai_engine.authority import (
+    APPROVED,
+    INVALID_PLAN,
+    derive_authorization_id,
+    derive_authority_id,
+    evaluate_authority,
+)
+from ai_engine.observation import (
+    OBSERVED,
+    observation_status_from_effect,
+    derive_observation_id,
+)
+from ai_engine.verification import (
+    CONFLICTING_EVIDENCE,
+    INSUFFICIENT_EVIDENCE,
+    PARTIAL,
+    UNKNOWN,
+    VERIFIED_FAILURE,
+    VERIFIED_SUCCESS,
+    VERIFICATION_RESULTS,
+    derive_verification_id,
+    verify,
+)
+
 
 def _canonical(obj):
     return json.dumps(obj, sort_keys=True, separators=(",", ":"),
@@ -104,6 +145,16 @@ def _prefix_role(record_id):
         return "decision"
     if rid.startswith("pl_") or rid.startswith("pls_"):
         return "plan"
+    if rid.startswith("au_"):
+        return "authority"
+    if rid.startswith("az_"):
+        return "authorization"
+    if rid.startswith("ac_"):
+        return "action"
+    if rid.startswith("ob_"):
+        return "observation"
+    if rid.startswith("vf_"):
+        return "verification"
     return None
 
 
@@ -436,7 +487,8 @@ class LifecycleService:
         }
 
     def record_outcome(self, classification, evidence_ids=(), plan_id=None,
-                       context_id=None, project_id=None):
+                       context_id=None, project_id=None,
+                       verification_id=None):
         """Record a verified execution outcome (origin observed)."""
         if isinstance(classification, str):
             classification = classify_outcome(classification)
@@ -464,6 +516,13 @@ class LifecycleService:
             created_at_epoch=_now(),
         ))
         ostore.close()
+        parents = [plan_id]
+        content = {"classification": classification.value,
+                   "plan_id": plan_id,
+                   "verification_evidence_ids": sorted(evidence_ids)}
+        if verification_id:
+            parents.append(str(verification_id))
+            content["verification_id"] = str(verification_id)
         lstore = self._lifecycle_store()
         lstore.save(LifecycleRecord(
             record_id=outcome_id,
@@ -476,14 +535,12 @@ class LifecycleService:
                 context_id=context_id,
                 evidence_ids=tuple(sorted(evidence_ids)),
                 lifecycle_state=LifecycleState.ACTIVE,
-                parent_record_ids=(plan_id,),
+                parent_record_ids=tuple(parents),
                 created_at=_now(),
                 updated_at=_now(),
             ),
             subject="outcome %s" % classification.value,
-            content={"classification": classification.value,
-                     "plan_id": plan_id,
-                     "verification_evidence_ids": sorted(evidence_ids)},
+            content=content,
         ))
         lstore.close()
         return {
@@ -1436,6 +1493,795 @@ class LifecycleService:
             "note": "the intelligence loop ends at the plan boundary; no "
                     "action was executed and no context was written",
         }
+
+    # ------------------------------------------------------------------
+    # Phase 29 — safe action, observation & verification loop
+    #
+    # Deterministic, project-isolated, backend-only. Unapproved / unknown
+    # actions never reach the effect layer; caller success claims are never
+    # verification evidence; an outcome is never marked verified success
+    # without verification evidence.
+    # ------------------------------------------------------------------
+
+    def _load_plan_meta(self, plan_id, project_id=None):
+        """Load a plan's lifecycle metadata in the caller's project."""
+        pid = project_id or self.project_id
+        plan_id = str(plan_id)
+        lstore = self._lifecycle_store()
+        try:
+            meta = lstore.get(plan_id)
+        finally:
+            lstore.close()
+        if meta is None:
+            return None
+        if (meta.provenance.project or pid) != pid:
+            raise ValueError("plan %s does not belong to project %s"
+                             % (plan_id, pid))
+        if not meta.role or meta.role.value != RecordRole.PLAN.value:
+            raise ValueError("%r is not a plan record" % (plan_id,))
+        if not meta.provenance.lifecycle_state == LifecycleState.ACTIVE:
+            raise ValueError("plan %s is not active" % (plan_id,))
+        return meta
+
+    @staticmethod
+    def _plan_steps(meta):
+        return list(((meta.content or {}).get("ordered_steps")) or [])
+
+    def _find_plan_step(self, meta, plan_step_id):
+        for step in self._plan_steps(meta):
+            if str(step.get("step_id")) == str(plan_step_id):
+                return dict(step)
+        return None
+
+    def _load_action_record(self, action_id, project_id=None):
+        pid = project_id or self.project_id
+        action_id = str(action_id)
+        lstore = self._lifecycle_store()
+        try:
+            meta = lstore.get(action_id)
+        finally:
+            lstore.close()
+        if meta is None:
+            return None
+        if (meta.provenance.project or pid) != pid:
+            raise ValueError("action %s does not belong to project %s"
+                             % (action_id, pid))
+        if not meta.role or meta.role.value != RecordRole.ACTION.value:
+            raise ValueError("%r is not an action record" % (action_id,))
+        return meta
+
+    def _observations_for(self, action_id, project_id=None):
+        pid = project_id or self.project_id
+        lstore = self._lifecycle_store()
+        try:
+            rows = lstore.for_role(RecordRole.OBSERVATION)
+        finally:
+            lstore.close()
+        return sorted(
+            [r for r in rows
+             if (r.provenance.project or pid) == pid
+             and ((r.content or {}).get("action_id") == str(action_id))],
+            key=lambda r: r.record_id)
+
+    def _verifications_for(self, action_id, project_id=None):
+        pid = project_id or self.project_id
+        lstore = self._lifecycle_store()
+        try:
+            rows = lstore.for_role(RecordRole.VERIFICATION)
+        finally:
+            lstore.close()
+        return sorted(
+            [r for r in rows
+             if (r.provenance.project or pid) == pid
+             and ((r.content or {}).get("action_id") == str(action_id))],
+            key=lambda r: r.record_id)
+
+    @staticmethod
+    def _denial_evidence_id(action_id, plan_step_id, decision):
+        return "ev_" + hashlib.sha256(_canonical({
+            "source": action_id,
+            "claim": "action denied by authority",
+            "decision": decision,
+            "plan_step_id": plan_step_id,
+        }).encode("utf-8")).hexdigest()[:32]
+
+    def _grant_record(self, meta, plan_id, plan_step_ids, actor, mechanism,
+                      evidence_ids):
+        pid = self.project_id
+        content = {
+            "plan_id": plan_id,
+            "plan_step_ids": sorted(plan_step_ids),
+            "actor": actor,
+            "mechanism": mechanism,
+            "state": "approved",
+            "evidence_ids": sorted(str(x) for x in evidence_ids),
+        }
+        lstore = self._lifecycle_store()
+        lstore.save(LifecycleRecord(
+            record_id=derive_authorization_id(
+                plan_id, plan_step_ids, actor, mechanism),
+            role=RecordRole.AUTHORIZATION,
+            provenance=Provenance(
+                record_id=derive_authorization_id(
+                    plan_id, plan_step_ids, actor, mechanism),
+                origin=Origin.USER_PROVIDED,
+                source=mechanism,
+                actor=actor,
+                timestamp=_now(),
+                project=pid,
+                context_id=(meta.provenance.context_id
+                            if meta is not None else None),
+                lifecycle_state=LifecycleState.ACTIVE,
+                parent_record_ids=(plan_id,),
+                created_at=_now(),
+                updated_at=_now(),
+            ),
+            subject="explicit approval grant for plan %s by %s"
+                    % (plan_id, actor),
+            content=content,
+        ))
+        lstore.close()
+        return content
+
+    def grant_approval(self, plan_id, plan_step_ids, actor,
+                       mechanism="explicit_user_approval", evidence_ids=(),
+                       project_id=None):
+        """Explicit approval grant (recorded, audited, idempotent)."""
+        pid = project_id or self.project_id
+        plan_id = str(plan_id)
+        if not isinstance(actor, str) or not actor.strip():
+            raise ValueError("actor must be a non-empty string")
+        plan_step_ids = [str(x) for x in (plan_step_ids or ())]
+        if not plan_step_ids:
+            raise ValueError("plan_step_ids must be a non-empty list")
+        meta = self._load_plan_meta(plan_id, pid)
+        if meta is None:
+            raise ValueError("no such plan_id: %r" % (plan_id,))
+        known = {str(s.get("step_id")) for s in self._plan_steps(meta)}
+        unknown = sorted(set(plan_step_ids) - known)
+        if unknown:
+            raise ValueError("plan %s has no such steps: %s"
+                             % (plan_id, unknown))
+        grant_id = derive_authorization_id(plan_id, plan_step_ids, actor,
+                                           mechanism)
+        lstore = self._lifecycle_store()
+        try:
+            existing = lstore.get(grant_id)
+        finally:
+            lstore.close()
+        if existing is not None:
+            content = existing.content or {}
+            content["grant_id"] = grant_id
+            content["duplicate"] = True
+            return content
+        self._grant_record(meta, plan_id, plan_step_ids, actor, mechanism,
+                           evidence_ids)
+        return {
+            "grant_id": grant_id,
+            "plan_id": plan_id,
+            "plan_step_ids": sorted(plan_step_ids),
+            "actor": actor,
+            "mechanism": mechanism,
+            "state": "approved",
+            "project_id": pid,
+            "role": RecordRole.AUTHORIZATION.value,
+            "origin": Origin.USER_PROVIDED.value,
+        }
+
+    def _approvals_for(self, plan_id, project_id=None):
+        pid = project_id or self.project_id
+        lstore = self._lifecycle_store()
+        try:
+            rows = lstore.for_role(RecordRole.AUTHORIZATION)
+        finally:
+            lstore.close()
+        approvals = []
+        for row in rows:
+            if (row.provenance.project or pid) != pid:
+                continue
+            content = row.content or {}
+            if str(content.get("plan_id")) != str(plan_id):
+                continue
+            for step_id in (content.get("plan_step_ids") or []):
+                approvals.append({
+                    "plan_id": str(plan_id),
+                    "step_id": str(step_id),
+                    "actor": content.get("actor"),
+                    "state": content.get("state") or "approved",
+                })
+        return approvals
+
+    def evaluate_authority(self, plan_id, plan_step_ids, actor, policy=None,
+                           project_id=None, request_ref=None):
+        """Deterministic authority/approval evaluation for plan steps.
+
+        Persists an AUTHORITY record (origin derived) and returns the decision.
+        ``UNKNOWN`` is never approval and never permits execution.
+        """
+        pid = project_id or self.project_id
+        plan_id = str(plan_id)
+        plan_step_ids = [str(x) for x in (plan_step_ids or ())]
+        if not isinstance(actor, str) or not actor.strip():
+            raise ValueError("actor must be a non-empty string")
+        meta = self._load_plan_meta(plan_id, pid)
+        if meta is None:
+            decision = INVALID_PLAN
+            per_step = {}
+            rationale = "no such plan in project %s: %r" % (pid, plan_id)
+            authority_id = derive_authority_id(
+                plan_id, plan_step_ids, actor, pid, "canonical", request_ref)
+            result = {
+                "authority_id": authority_id,
+                "plan_id": plan_id,
+                "plan_step_ids": sorted(plan_step_ids),
+                "actor": actor,
+                "project_id": pid,
+                "policy_ref": "canonical",
+                "decision": decision,
+                "per_step": per_step,
+                "rationale": rationale,
+            }
+        else:
+            steps = self._plan_steps(meta)
+            result = evaluate_authority(
+                plan_id, plan_step_ids, actor, pid, policy=policy,
+                steps=steps, approvals=self._approvals_for(plan_id, pid),
+                policy_ref="canonical", request_ref=request_ref)
+        self._record_authority(meta, plan_id, result, pid)
+        return result
+
+    def _record_authority(self, meta, plan_id, result, project_id):
+        lstore = self._lifecycle_store()
+        lstore.save(LifecycleRecord(
+            record_id=result["authority_id"],
+            role=RecordRole.AUTHORITY,
+            provenance=Provenance(
+                record_id=result["authority_id"],
+                origin=Origin.DERIVED,
+                source="authority.evaluate",
+                actor=result.get("actor"),
+                timestamp=_now(),
+                project=project_id,
+                context_id=(meta.provenance.context_id
+                            if meta is not None else None),
+                lifecycle_state=LifecycleState.ACTIVE,
+                parent_record_ids=(plan_id,),
+                derived_from=(plan_id,),
+                created_at=_now(),
+                updated_at=_now(),
+            ),
+            subject="authority %s for plan %s" % (result.get("decision"),
+                                                  plan_id),
+            content={
+                "plan_id": plan_id,
+                "plan_step_ids": sorted(result.get("plan_step_ids") or []),
+                "actor": result.get("actor"),
+                "project_id": project_id,
+                "decision": result.get("decision"),
+                "per_step": result.get("per_step") or {},
+                "policy_ref": result.get("policy_ref"),
+                "rationale": result.get("rationale"),
+            },
+        ))
+        lstore.close()
+
+    def _save_action(self, status, plan_id, plan_step_id, actor, request_id,
+                     effect, authority_id, authority_decision, project_id,
+                     context_id, observation_ids=None, detail=None):
+        action_id = derive_action_id(plan_id, plan_step_id, actor, request_id,
+                                     project_id)
+        content = {
+            "plan_id": plan_id,
+            "plan_step_id": plan_step_id,
+            "actor": actor,
+            "project_id": project_id,
+            "request_id": request_id,
+            "execution_status": status,
+            "registered_effect": effect,
+            "authority_id": authority_id,
+            "authority_decision": authority_decision,
+            "observation_references": sorted(observation_ids or ()),
+        }
+        if detail is not None:
+            content["detail"] = detail
+        lstore = self._lifecycle_store()
+        lstore.save(LifecycleRecord(
+            record_id=action_id,
+            role=RecordRole.ACTION,
+            provenance=Provenance(
+                record_id=action_id,
+                origin=Origin.OBSERVED,
+                source="action.request",
+                actor=actor,
+                timestamp=_now(),
+                project=project_id,
+                context_id=context_id,
+                lifecycle_state=LifecycleState.ACTIVE,
+                parent_record_ids=(plan_id, authority_id),
+                created_at=_now(),
+                updated_at=_now(),
+            ),
+            subject="action %s for plan step %s (%s)"
+                    % (action_id, plan_step_id, status),
+            content=content,
+        ))
+        lstore.close()
+        return action_id
+
+    def _record_observation(self, action_id, observed_state, status, source,
+                            project_id, context_id=None, evidence_ids=(),
+                            sequence=0):
+        obs_id = derive_observation_id(action_id, source,
+                                       observed_state or {})
+        pid = project_id or self.project_id
+        lstore = self._lifecycle_store()
+        try:
+            existing = lstore.get(obs_id)
+        finally:
+            lstore.close()
+        if existing is not None:
+            return (obs_id, sorted(existing.content.get("evidence_ids")
+                                   or existing.provenance.evidence_ids or ()))
+        doc_evidence = self._record_observation_evidence(
+            obs_id, observed_state or {}, pid, context_id)
+        doc_evidence = sorted(set(doc_evidence) | set(
+            str(x) for x in evidence_ids))
+        lstore = self._lifecycle_store()
+        lstore.save(LifecycleRecord(
+            record_id=obs_id,
+            role=RecordRole.OBSERVATION,
+            provenance=Provenance(
+                record_id=obs_id,
+                origin=Origin.OBSERVED,
+                source=source,
+                timestamp=_now(),
+                project=pid,
+                context_id=context_id,
+                evidence_ids=tuple(doc_evidence),
+                lifecycle_state=LifecycleState.ACTIVE,
+                parent_record_ids=(action_id,),
+                created_at=_now(),
+                updated_at=_now(),
+            ),
+            subject="observation %s for action %s (%s)" % (obs_id, action_id,
+                                                           status),
+            content={
+                "action_id": action_id,
+                "status": status,
+                "source": source,
+                "observed_state": dict(observed_state or {}),
+                "sequence": int(sequence),
+                "evidence_ids": doc_evidence,
+            },
+        ))
+        lstore.close()
+        return (obs_id, doc_evidence)
+
+    def _record_observation_evidence(self, observation_id, observed_state,
+                                     project_id, context_id=None):
+        evidence_ids = []
+        for key in sorted((observed_state or {}).keys()):
+            value = observed_state[key]
+            claim = "%s=%s" % (key, _canonical(value))
+            rec = self.record_evidence(
+                source_observation_id=observation_id, claim=claim,
+                evidence_type="fact", project_id=project_id,
+                context_id=context_id)
+            evidence_ids.append(rec["evidence_id"])
+        return evidence_ids
+
+    def request_action(self, plan_id, plan_step_id, actor, request_id=None,
+                       policy=None, executors=None, project_id=None):
+        """Canonical safe ACTION attempt via the narrow executor boundary.
+
+        Authority is evaluated first; anything other than APPROVED produces a
+        DENIED action that never reaches the effect layer. Approved actions
+        execute through an Effect Executor, and the executor's reported
+        reality becomes the first OBSERVATION of the action.
+        """
+        pid = project_id or self.project_id
+        plan_id = str(plan_id)
+        plan_step_id = str(plan_step_id)
+        if not isinstance(actor, str) or not actor.strip():
+            raise ValueError("actor must be a non-empty string")
+        meta = self._load_plan_meta(plan_id, pid)
+        if meta is None:
+            raise ValueError("no such plan_id: %r" % (plan_id,))
+        step = self._find_plan_step(meta, plan_step_id)
+        if step is None:
+            raise ValueError("plan %s has no such step: %r"
+                             % (plan_id, plan_step_id))
+        context_id = meta.provenance.context_id
+        request_id = request_id or derive_default_request_id(
+            plan_id, plan_step_id, actor, pid)
+        action_id = derive_action_id(plan_id, plan_step_id, actor, request_id,
+                                     pid)
+        existing = self._load_action_record(action_id, pid)
+        if existing is not None:
+            status = (existing.content or {}).get("execution_status")
+            return {
+                "action_id": action_id,
+                "plan_id": plan_id,
+                "plan_step_id": plan_step_id,
+                "actor": actor,
+                "request_id": request_id,
+                "project_id": pid,
+                "execution_status": status,
+                "authority_decision":
+                    (existing.content or {}).get("authority_decision"),
+                "observation_ids":
+                    sorted((existing.content or {}).get(
+                        "observation_references") or ()),
+                "duplicate": True,
+                "retry_policy": (
+                    "pass a distinct request_id to execute a new attempt of "
+                    "this plan step"),
+            }
+
+        authority = self.evaluate_authority(
+            plan_id, [plan_step_id], actor, policy=policy, project_id=pid,
+            request_ref=request_id)
+        decision = authority["decision"]
+        effect = str(step.get("action"))
+        if decision != APPROVED:
+            action_id = self._save_action(
+                DENIED, plan_id, plan_step_id, actor, request_id, effect,
+                authority["authority_id"], decision, pid, context_id)
+            return {
+                "action_id": action_id,
+                "plan_id": plan_id,
+                "plan_step_id": plan_step_id,
+                "actor": actor,
+                "request_id": request_id,
+                "project_id": pid,
+                "execution_status": DENIED,
+                "authority_decision": decision,
+                "authority_id": authority["authority_id"],
+                "observation_ids": [],
+                "effect": effect,
+                "executed": False,
+                "duplicate": False,
+                "note": "unapproved/denied actions never reach the effect "
+                        "layer",
+            }
+
+        effect_result = execute_effect(effect, step.get("inputs") or {},
+                                       executor=executors)
+        status = action_status_from_effect(effect_result["status"])
+        observation_ids = []
+        evidence_ids = []
+        obs_id, doc_evidence = self._record_observation(
+            action_id, effect_result["observed_state"],
+            observation_status_from_effect(effect_result["status"]),
+            source="effect_executor", project_id=pid, context_id=context_id)
+        observation_ids.append(obs_id)
+        evidence_ids.extend(doc_evidence)
+        detail = effect_result.get("detail")
+        if isinstance(detail, dict):
+            detail = dict(detail)
+        else:
+            detail = str(detail or "")
+        if effect_result["unsupported"]:
+            detail = {"unsupported": True, "detail": str(
+                effect_result.get("detail") or "unsupported effect")}
+        action_id = self._save_action(
+            status, plan_id, plan_step_id, actor, request_id, effect,
+            authority["authority_id"], decision, pid, context_id,
+            observation_ids=observation_ids, detail=detail)
+        return {
+            "action_id": action_id,
+            "plan_id": plan_id,
+            "plan_step_id": plan_step_id,
+            "actor": actor,
+            "request_id": request_id,
+            "project_id": pid,
+            "execution_status": status,
+            "authority_decision": decision,
+            "authority_id": authority["authority_id"],
+            "observation_ids": observation_ids,
+            "evidence_ids": sorted(evidence_ids),
+            "effect": effect,
+            "executed": True,
+            "duplicate": False,
+        }
+
+    def record_observation(self, action_id, observed_state, source=None,
+                           project_id=None):
+        """Record an additional OBSERVATION for an existing action."""
+        pid = project_id or self.project_id
+        action = self._load_action_record(action_id, pid)
+        if action is None:
+            raise ValueError("no such action_id: %r" % (action_id,))
+        if not isinstance(observed_state, dict) or not observed_state:
+            raise ValueError("observed_state must be a non-empty dict")
+        observations = self._observations_for(action_id, pid)
+        sequence = len(observations)
+        obs_id, doc_evidence = self._record_observation(
+            action_id, dict(observed_state), OBSERVED,
+            source or "manual_observation", pid,
+            context_id=action.provenance.context_id,
+            sequence=sequence)
+        return {
+            "observation_id": obs_id,
+            "action_id": action_id,
+            "project_id": pid,
+            "status": OBSERVED,
+            "source": source or "manual_observation",
+            "observed_state": dict(observed_state),
+            "sequence": sequence,
+            "evidence_ids": sorted(doc_evidence),
+        }
+
+    def verify_action(self, action_id, expectations=None, project_id=None):
+        """Deterministic VERIFICATION of an action against expectations."""
+        pid = project_id or self.project_id
+        action = self._load_action_record(action_id, pid)
+        if action is None:
+            raise ValueError("no such action_id: %r" % (action_id,))
+        action_content = action.content or {}
+        expectations = dict(expectations or {})
+        observations = self._observations_for(action_id, pid)
+        claims = []
+        documented = []
+        for obs in observations:
+            observed_state = (obs.content or {}).get("observed_state") or {}
+            for key in sorted(observed_state.keys()):
+                claims.append({
+                    "claim_key": key,
+                    "value": observed_state[key],
+                    "source": obs.record_id,
+                })
+            documented.extend(obs.provenance.evidence_ids
+                              or (obs.content or {}).get("evidence_ids") or ())
+        result = verify(expected_conditions=expectations,
+                        observed_claims=claims,
+                        documented_evidence=documented)
+        verification_id = derive_verification_id(action_id, expectations)
+        lstore = self._lifecycle_store()
+        lstore.save(LifecycleRecord(
+            record_id=verification_id,
+            role=RecordRole.VERIFICATION,
+            provenance=Provenance(
+                record_id=verification_id,
+                origin=Origin.DERIVED,
+                source="verification.verify",
+                actor=action.provenance.actor,
+                timestamp=_now(),
+                project=pid,
+                context_id=action.provenance.context_id,
+                evidence_ids=result["documented_evidence"],
+                lifecycle_state=LifecycleState.ACTIVE,
+                parent_record_ids=(action_id,) + tuple(
+                    obs.record_id for obs in observations),
+                derived_from=(action_id,),
+                created_at=_now(),
+                updated_at=_now(),
+            ),
+            subject="verification %s for action %s" % (result["result"],
+                                                       action_id),
+            content={
+                "action_id": action_id,
+                "expectations": dict(expectations),
+                "observed_claims": claims,
+                "observation_ids": [o.record_id for o in observations],
+                "result": result["result"],
+                "rationale": result["rationale"],
+                "evidence_ids": result["documented_evidence"],
+                "plan_step_id": action_content.get("plan_step_id"),
+            },
+        ))
+        lstore.close()
+        return {
+            "verification_id": verification_id,
+            "action_id": action_id,
+            "project_id": pid,
+            "result": result["result"],
+            "expectations": dict(expectations),
+            "observation_ids": [o.record_id for o in observations],
+            "rationale": result["rationale"],
+            "evidence_ids": result["documented_evidence"],
+        }
+
+    @staticmethod
+    def _classification_from_verification(result):
+        mapping = {
+            VERIFIED_SUCCESS: OutcomeClassification.SUCCESS,
+            VERIFIED_FAILURE: OutcomeClassification.FAILURE,
+            PARTIAL: OutcomeClassification.PARTIAL,
+            INSUFFICIENT_EVIDENCE: OutcomeClassification.UNKNOWN,
+            CONFLICTING_EVIDENCE: OutcomeClassification.UNKNOWN,
+            UNKNOWN: OutcomeClassification.UNKNOWN,
+        }
+        return mapping.get(result, OutcomeClassification.UNKNOWN)
+
+    def _deny_evidence(self, action_id, plan_step_id, decision, project_id,
+                       context_id=None):
+        evidence_id = self._denial_evidence_id(action_id, plan_step_id,
+                                               decision)
+        estore = self._evidence_store()
+        try:
+            existing = estore.get(evidence_id)
+        finally:
+            estore.close()
+        if existing is not None:
+            return evidence_id
+        return self.record_evidence(
+            source_observation_id=action_id,
+            claim="action denied by authority: %s" % decision,
+            evidence_type="fact", supporting_data={
+                "decision": decision, "plan_step_id": plan_step_id},
+            project_id=project_id, context_id=context_id)["evidence_id"]
+
+    def finalize_action(self, action_id, task_type=None, domain=None,
+                        strategy_id=None, project_id=None):
+        """Convert an action's verified reality into OUTCOME + EXPERIENCE.
+
+        A VERIFIED_SUCCESS outcome is only produced when VERIFICATION has a
+        documented verification evidence id. Missing/insufficient/conflicting
+        verification and denied actions are preserved as unknown/blocked —
+        never silently converted into success.
+        """
+        pid = project_id or self.project_id
+        action = self._load_action_record(action_id, pid)
+        if action is None:
+            raise ValueError("no such action_id: %r" % (action_id,))
+        action_content = action.content or {}
+        plan_id = action_content.get("plan_id")
+        plan_step_id = action_content.get("plan_step_id")
+        plan = self._load_plan_meta(plan_id, pid)
+        context_id = plan.provenance.context_id if plan else None
+        situation = (plan.content or {}).get("situation") if plan else "n/a"
+        attempt = action_content.get("registered_effect") or "action"
+        verification_id = None
+        verifications = self._verifications_for(action_id, pid)
+
+        status = action_content.get("execution_status")
+        verification_result = None
+        if status == DENIED:
+            decision = action_content.get("authority_decision") or DENIED
+            evidence_ids = [self._deny_evidence(
+                action_id, plan_step_id, decision, pid, context_id)]
+            classification = OutcomeClassification.BLOCKED
+            verification_result = DENIED
+        else:
+            verifications = [v for v in verifications if
+                             (v.content or {}).get("result") in
+                             VERIFICATION_RESULTS]
+            if verifications:
+                latest = verifications[-1]
+                verification_id = latest.record_id
+                verification_result = (latest.content or {}).get("result")
+                evidence_ids = sorted(latest.provenance.evidence_ids
+                                      or (latest.content or {}).get(
+                                          "evidence_ids") or ())
+                if not evidence_ids:
+                    # A non-success verification may carry no documented
+                    # evidence; the outcome then documents its absence.
+                    evidence_ids = self._unverified_evidence(
+                        action_id, pid, context_id)
+            else:
+                verification_result = INSUFFICIENT_EVIDENCE
+                evidence_ids = self._unverified_evidence(
+                    action_id, pid, context_id)
+            classification = self._classification_from_verification(
+                verification_result)
+        outcome = self.record_outcome(
+            classification, evidence_ids=evidence_ids, plan_id=plan_id,
+            context_id=context_id, project_id=pid,
+            verification_id=verification_id)
+        result_text = str(classification.value)
+        experience = self.record_experience(
+            situation=situation, attempt=attempt, result=result_text,
+            context_id=context_id, evidence_ids=evidence_ids,
+            outcome_id=outcome["outcome_id"], task_type=task_type,
+            domain=domain, strategy_id=strategy_id, actor=action.provenance.actor,
+            source="observed", project_id=pid)
+        return {
+            "action_id": action_id,
+            "verification_id": verification_id,
+            "verification_result": verification_result,
+            "plan_id": plan_id,
+            "plan_step_id": plan_step_id,
+            "classification": result_text,
+            "evidence_ids": sorted(evidence_ids),
+            "outcome": outcome,
+            "experience": experience,
+        }
+
+    def _unverified_evidence(self, action_id, project_id, context_id=None):
+        evidence_id = "ev_" + hashlib.sha256(_canonical({
+            "action_id": action_id,
+            "claim": "verification evidence absent",
+        }).encode("utf-8")).hexdigest()[:32]
+        estore = self._evidence_store()
+        try:
+            existing = estore.get(evidence_id)
+        finally:
+            estore.close()
+        if existing is not None:
+            return [evidence_id]
+        rec = self.record_evidence(
+            source_observation_id=action_id,
+            claim="verification evidence absent for action %s" % action_id,
+            evidence_type="fact",
+            supporting_data={"action_id": action_id},
+            project_id=project_id, context_id=context_id)
+        return [rec["evidence_id"]]
+
+    def execute_plan(self, plan_id, plan_step_ids, actor, policy=None,
+                     request_id=None, verification=None, task_type=None,
+                     domain=None, strategy_id=None, project_id=None):
+        """Canonical end-to-end safe execution of plan steps.
+
+        Per step: AUTHORITY/APPROVAL -> ACTION -> OBSERVATION ->
+        VERIFICATION -> OUTCOME -> EXPERIENCE. Unapproved or unknown
+        authority blocks execution; verified success requires evidence;
+        failures/partials/unknowns are retained.
+        """
+        pid = project_id or self.project_id
+        plan_id = str(plan_id)
+        meta = self._load_plan_meta(plan_id, pid)
+        if meta is None:
+            raise ValueError("no such plan_id: %r" % (plan_id,))
+        plan_step_ids = [str(x) for x in (plan_step_ids or ())]
+        known = {str(s.get("step_id")) for s in self._plan_steps(meta)}
+        unknown = sorted(set(plan_step_ids) - known)
+        if unknown:
+            raise ValueError("plan %s has no such steps: %s"
+                             % (plan_id, unknown))
+        ordered = [sid for sid in self._plan_steps_list(meta)
+                   if sid in plan_step_ids]
+        steps = ordered or self._plan_steps_list(meta)
+
+        if strategy_id is None:
+            decision_id = (meta.content or {}).get("decision_id")
+            if decision_id:
+                lstore = self._lifecycle_store()
+                try:
+                    decision_meta = lstore.get(decision_id)
+                finally:
+                    lstore.close()
+                if decision_meta is not None:
+                    strategy_id = ((decision_meta.content or {}).get(
+                        "applicable_strategy_id")
+                        or (decision_meta.content or {}).get(
+                        "strategy_id"))
+        results = []
+        for step_id in steps:
+            step_action = self.request_action(
+                plan_id, step_id, actor, policy=policy, request_id=request_id,
+                project_id=pid)
+            verification_result = None
+            if step_action.get("execution_status") != DENIED:
+                verification_result = self.verify_action(
+                    step_action["action_id"], expectations=verification,
+                    project_id=pid)
+            finalized = self.finalize_action(
+                step_action["action_id"], task_type=task_type, domain=domain,
+                strategy_id=strategy_id, project_id=pid)
+            results.append({
+                "plan_step_id": step_id,
+                "action": step_action,
+                "authority": {
+                    "authority_id": step_action.get("authority_id"),
+                    "decision": step_action.get("authority_decision"),
+                },
+                "verification": verification_result,
+                "outcome": finalized["outcome"],
+                "experience": finalized["experience"],
+                "classification": finalized["classification"],
+            })
+        return {
+            "plan_id": plan_id,
+            "actor": actor,
+            "project_id": pid,
+            "steps": results,
+            "chain": ["authority", "action", "observation", "verification",
+                      "outcome", "experience"],
+        }
+
+    def _plan_steps_list(self, meta):
+        return [str(s.get("step_id")) for s in self._plan_steps(meta)]
 
     # ------------------------------------------------------------------
     # Trace / describe / summary — provenance & lifecycle inspection

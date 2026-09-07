@@ -67,7 +67,9 @@ class LifecycleModelTests(unittest.TestCase):
             {r.value for r in RecordRole},
             {"source_record", "memory", "knowledge", "experience",
              "outcome", "evidence", "learning", "strategy", "context",
-             "strategy_application", "reasoning", "decision", "plan"})
+             "strategy_application", "reasoning", "decision", "plan",
+             "authority", "authorization", "action", "observation",
+             "verification"})
         self.assertEqual(
             {s.value for s in LifecycleState},
             {"active", "superseded", "deprecated", "rejected",
