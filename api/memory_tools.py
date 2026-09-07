@@ -30,7 +30,8 @@ class MemoryToolInterface:
 
     Usage:
         iface = MemoryToolInterface(data_root="/tmp/data")
-        iface.execute({"operation": "remember", "arguments": {"text": "hello"}})
+        iface.execute({"operation": "remember",
+                       "arguments": {"payload": {"text": "hello"}, "project_id": "default"}})
     """
 
     def __init__(self, data_root=None, default_vocabulary="diary_v1", api=None):

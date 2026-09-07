@@ -207,7 +207,10 @@ class KnowledgeHTTPServer(ThreadingHTTPServer):
         interface = self._ensure_loaded()
         if interface is None:
             return _single_env(
-                "internal_error", "server could not initialize the engine")
+                "internal_error",
+                "server could not initialize the v1 engine: legacy /v1/execute "
+                "requires an explicit --db path in a standalone install "
+                "(use /v2/execute for new integrations)")
         with self._execute_lock:
             return interface.execute(request)
 
