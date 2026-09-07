@@ -22,7 +22,7 @@
 ### 1.2 Contract v2 (`api/contract_v2.py`)
 
 * `CONTRACT_VERSION = "2"` — additive generic Memory contract.
-* Operations (inventory, exactly thirteen):
+* Operations (inventory, exactly fourteen):
 
 | Operation | Required args | Optional args |
 | --- | --- | --- |
@@ -39,6 +39,7 @@
 | `lifecycle.trace` | `record_id` | `role`, `project_id`, `max_depth` (positive int) |
 | `lifecycle.describe` | `record_id` | `role`, `project_id` |
 | `lifecycle.summary` | — | `project_id` |
+| `lifecycle.plan` | `situation` (non-empty string), `experience_ids` (list) | `context_id`, `constraints` (object), `max_steps` (positive int), `min_samples` (positive int), `project_id` |
 
 * `project_id` matches `^[a-z0-9_-]{1,64}$`; default project is `"default"`.
 * `vocabulary_id` is accepted on read ops for capture-consistency but does not
@@ -70,6 +71,15 @@
   * `lifecycle.describe` → one record with full lifecycle provenance
   * `lifecycle.summary` → `{project_id, total_records, by_role, by_origin,
     by_state}`
+  * `lifecycle.plan` → the full intelligence chain in one deterministic pass
+    (Experience → Learning → Strategy → Strategy Application → Reasoning →
+    Decision → Plan), returning
+    `{learning_id, strategy_count, strategies, strategy_application_id,
+    strategy_application_status, reasoning_id, reasoning_status, decision_id,
+    decision_status, plan_id, plan_status, action_handoff}`. Ends at the plan
+    boundary — no action is executed. All records carry `derived_from`
+    provenance linking plan → decision → reasoning → strategy application →
+    strategy. Deterministic across repeated calls with the same project.
 * `remember` records the full pipeline in one commit:
   *remember → activity → context → knowledge node → evidence*. Outcome /
   experience / strategy are produced by the (internal) intelligence layer, not
@@ -102,6 +112,10 @@
   `lifecycle_trace(record_id, role=None, project_id=None, max_depth=None)`,
   `lifecycle_describe(record_id, role=None, project_id=None)`,
   `lifecycle_summary(project_id=None)`.
+* Lifecycle planning (Phase 28, additive): `lifecycle_plan(situation,
+  experience_ids, context_id=None, constraints=None, max_steps=None,
+  min_samples=None, project_id=None)` — runs the deterministic intelligence
+  chain; nothing is executed.
 * Vocabulary errors (unknown vocabulary id) are raised as
   `KnowledgeArgumentError` → `invalid_argument`, not `internal_error`.
 
@@ -122,6 +136,9 @@
   vocabulary_id=None)`, `provenance(node_id, project_id=None,
   vocabulary_id=None)`, `inspect(project_id=None, vocabulary_id=None)`,
   `context_get(context_id, project_id=None)`.
+* Lifecycle planning (Phase 28, additive): `plan(situation, experience_ids,
+  context_id=None, constraints=None, max_steps=None, min_samples=None,
+  project_id=None)` issuing the `lifecycle.plan` operation.
 * Transports (`knowledge_client/transports.py`):
   * `MemoryInProcessTransport(data_root=None, interface=None)` — direct call.
   * `MemorySessionTransport(data_root=None, ...)` — persistent subprocess session.

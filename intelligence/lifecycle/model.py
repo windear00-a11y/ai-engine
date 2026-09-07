@@ -9,7 +9,9 @@ Single lifecycle grammar shared by every intelligence record::
         -> KNOWLEDGE and/or EXPERIENCE
         -> LEARNING
         -> STRATEGY
+        -> STRATEGY APPLICATION
         -> REASONING / DECISION
+        -> PLAN
         -> ACTION
         -> OUTCOME
         -> EVIDENCE
@@ -84,6 +86,10 @@ class RecordRole(str, Enum):
     LEARNING = "learning"
     STRATEGY = "strategy"
     CONTEXT = "context"
+    STRATEGY_APPLICATION = "strategy_application"
+    REASONING = "reasoning"
+    DECISION = "decision"
+    PLAN = "plan"
 
 
 class LifecycleState(str, Enum):
@@ -158,6 +164,10 @@ _ROLE_ORIGINS: dict = {
         Origin.OBSERVED,
         Origin.USER_PROVIDED,
     },
+    RecordRole.STRATEGY_APPLICATION: {Origin.DERIVED},
+    RecordRole.REASONING: {Origin.DERIVED},
+    RecordRole.DECISION: {Origin.DERIVED},
+    RecordRole.PLAN: {Origin.DERIVED},
 }
 
 # Markers used by classify_origin to infer an origin from a source string.

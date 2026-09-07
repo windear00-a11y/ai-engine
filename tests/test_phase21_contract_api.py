@@ -51,7 +51,7 @@ EXPECTED_V2_OPS = {"remember", "recall", "get", "provenance", "inspect",
                    "lifecycle.ingest", "lifecycle.experience",
                    "lifecycle.learning", "lifecycle.strategy",
                    "lifecycle.trace", "lifecycle.describe",
-                   "lifecycle.summary"}
+                   "lifecycle.summary", "lifecycle.plan"}
 SHARED_ERROR_CODES = {
     "invalid_request",
     "unknown_operation",
@@ -644,7 +644,7 @@ class TestContractDocConsistency(unittest.TestCase):
                    "lifecycle.ingest", "lifecycle.experience",
                    "lifecycle.learning", "lifecycle.strategy",
                    "lifecycle.trace", "lifecycle.describe",
-                   "lifecycle.summary"}
+                   "lifecycle.summary", "lifecycle.plan"}
         self.assertEqual(doc_ops, set(contract_v2.OPERATIONS))
 
     def test_field_lists_match_client_surface(self):

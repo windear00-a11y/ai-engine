@@ -265,3 +265,18 @@ class MemoryAPI:
             return svc.summary(project_id=project_id)
         except ValueError as exc:
             raise self._lifecycle_error(exc)
+
+    def lifecycle_plan(self, situation, experience_ids, context_id=None,
+                       constraints=None, max_steps=None, min_samples=None,
+                       project_id=None):
+        """Run the canonical deterministic intelligence loop from experiences
+        to a plan (strategy application -> reasoning -> decision -> plan)."""
+        svc = self._lifecycle_for(project_id)
+        try:
+            return svc.plan_from_experiences(
+                situation=situation, experience_ids=experience_ids,
+                context_id=context_id, constraints=constraints,
+                max_steps=max_steps or 8, min_samples=min_samples,
+                project_id=project_id)
+        except ValueError as exc:
+            raise self._lifecycle_error(exc)

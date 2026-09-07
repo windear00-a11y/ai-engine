@@ -131,6 +131,28 @@ class MemoryClient:
             args["project_id"] = project_id
         return self.request("context.get", args)
 
+    def plan(self, situation, experience_ids, context_id=None,
+             constraints=None, max_steps=None, min_samples=None,
+             project_id=None):
+        """Run the canonical deterministic loop (strategy application ->
+        reasoning -> decision -> plan) over existing experiences."""
+        if not isinstance(situation, str) or not situation.strip():
+            from knowledge_client.errors import InvalidArgumentError
+            raise InvalidArgumentError("situation must be a non-empty string")
+        args = {"situation": situation,
+                "experience_ids": list(experience_ids)}
+        if context_id is not None:
+            args["context_id"] = context_id
+        if constraints is not None:
+            args["constraints"] = constraints
+        if max_steps is not None:
+            args["max_steps"] = max_steps
+        if min_samples is not None:
+            args["min_samples"] = min_samples
+        if project_id is not None:
+            args["project_id"] = project_id
+        return self.request("lifecycle.plan", args)
+
     def close(self):
         closer = getattr(self._transport, "close", None)
         if closer:

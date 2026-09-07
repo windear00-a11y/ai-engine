@@ -66,7 +66,8 @@ class LifecycleModelTests(unittest.TestCase):
         self.assertEqual(
             {r.value for r in RecordRole},
             {"source_record", "memory", "knowledge", "experience",
-             "outcome", "evidence", "learning", "strategy", "context"})
+             "outcome", "evidence", "learning", "strategy", "context",
+             "strategy_application", "reasoning", "decision", "plan"})
         self.assertEqual(
             {s.value for s in LifecycleState},
             {"active", "superseded", "deprecated", "rejected",
@@ -84,6 +85,16 @@ class LifecycleModelTests(unittest.TestCase):
         self.assertTrue(ok)
         ok, _ = check_role_origin(RecordRole.STRATEGY, Origin.OBSERVED)
         self.assertFalse(ok)
+
+    def test_phase28_derived_roles_are_derived_only(self):
+        for role in (RecordRole.STRATEGY_APPLICATION, RecordRole.REASONING,
+                     RecordRole.DECISION, RecordRole.PLAN):
+            ok, _ = check_role_origin(role, Origin.DERIVED)
+            self.assertTrue(ok)
+            ok, _ = check_role_origin(role, Origin.OBSERVED)
+            self.assertFalse(ok)
+            ok, _ = check_role_origin(role, Origin.EXTERNAL)
+            self.assertFalse(ok)
 
     def test_external_not_experience_reason(self):
         ok, reason = check_role_origin(RecordRole.EXPERIENCE, Origin.EXTERNAL)

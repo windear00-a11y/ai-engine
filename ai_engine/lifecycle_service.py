@@ -72,6 +72,15 @@ def _now():
     return time.time()
 
 
+def _as_tuple(value):
+    """Normalize a record id (or sequence) into a tuple for provenance."""
+    if value is None:
+        return ()
+    if isinstance(value, (tuple, list, set)):
+        return tuple(value)
+    return (value,)
+
+
 def _prefix_role(record_id):
     """Guess a role from a deterministic record id prefix (best effort)."""
     rid = str(record_id or "")
@@ -87,6 +96,14 @@ def _prefix_role(record_id):
         return "context"
     if rid.startswith("lrn_"):
         return "learning"
+    if rid.startswith("sa_"):
+        return "strategy_application"
+    if rid.startswith("rs_"):
+        return "reasoning"
+    if rid.startswith("dc_"):
+        return "decision"
+    if rid.startswith("pl_") or rid.startswith("pls_"):
+        return "plan"
     return None
 
 
@@ -870,6 +887,557 @@ class LifecycleService:
         }
 
     # ------------------------------------------------------------------
+    # STRATEGY APPLICATION -> REASONING -> DECISION -> PLAN (Phase 28)
+    # ------------------------------------------------------------------
+    # Canonical chain: a strategy applies deterministically to a situation;
+    # reasoning determines what the information supports; decision selects an
+    # intended course under constraints; the plan describes the intended steps
+    # WITHOUT execution. All derived records persist with the same lifecycle
+    # provenance model (roles STRATEGY_APPLICATION / REASONING / DECISION /
+    # PLAN, origin DERIVED) so the Phase 26 trace walks the full chain.
+
+    def apply_strategy(self, situation, strategy_ids=None, context_id=None,
+                       max_candidates=20, project_id=None):
+        """Deterministic canonical Strategy Application.
+
+        Evaluates strategy candidates against ``situation`` and (optionally)
+        ``context_id`` and persists one STRATEGY_APPLICATION record. Existing
+        Phase 25 fit semantics (deprecated/superseded rejected, context
+        restrictions honored) are preserved; a missing current context under
+        restrictions is surfaced as insufficient_evidence rather than assumed.
+        """
+        if not isinstance(situation, str) or not situation.strip():
+            raise ValueError("situation must be a non-empty string")
+        pid = project_id or self.project_id
+        sstore = self._strategy_store()
+        try:
+            if strategy_ids is None:
+                strategies = sstore.all()
+            else:
+                ids = sorted({str(x) for x in strategy_ids})
+                strategies = []
+                for strategy_id in ids:
+                    strategy = sstore.get(strategy_id)
+                    if strategy is not None:
+                        strategies.append(strategy)
+        finally:
+            sstore.close()
+
+        from ai_engine.strategy_application import apply_strategies
+        result = apply_strategies(
+            situation, [s.to_dict() for s in strategies],
+            context_id=context_id, max_candidates=max_candidates)
+        strategy_id = result.get("strategy_id")
+        supporting_evidence = result["provenance"]["supporting_evidence_ids"]
+        supporting_experience = result["provenance"][
+            "supporting_experience_ids"]
+
+        lstore = self._lifecycle_store()
+        lstore.save(LifecycleRecord(
+            record_id=result["application_id"],
+            role=RecordRole.STRATEGY_APPLICATION,
+            provenance=Provenance(
+                record_id=result["application_id"],
+                origin=Origin.DERIVED,
+                timestamp=_now(),
+                project=pid,
+                context_id=context_id,
+                evidence_ids=supporting_evidence,
+                confidence=result["confidence"] or None,
+                lifecycle_state=LifecycleState.ACTIVE,
+                parent_record_ids=(strategy_id,) if strategy_id else (),
+                derived_from=(strategy_id,) if strategy_id else (),
+                created_at=_now(),
+                updated_at=_now(),
+            ),
+            subject="strategy application: situation %r (%s)"
+                    % (result["situation_pattern"], result["status"]),
+            content={
+                "situation": result["situation"],
+                "situation_pattern": result["situation_pattern"],
+                "context_id": context_id,
+                "application_status": result["status"],
+                "strategy_id": strategy_id,
+                "candidate_ids": [c["strategy_id"]
+                                  for c in result["candidates"]],
+                "candidate_statuses": [
+                    {"strategy_id": c["strategy_id"],
+                     "strategy_status": c["strategy_status"],
+                     "recommended_approach": c["recommended_approach"]}
+                    for c in result["candidates"]],
+                "applicable_count": result["applicable_count"],
+                "supporting_experience_ids": supporting_experience,
+                "supporting_evidence_ids": supporting_evidence,
+                "evidence_ids": supporting_evidence,
+                "uncertainties": result["uncertainties"],
+                "truncated": result["truncated"],
+            },
+        ))
+        lstore.close()
+        return {
+            "application_id": result["application_id"],
+            "role": RecordRole.STRATEGY_APPLICATION.value,
+            "origin": Origin.DERIVED.value,
+            "status": result["status"],
+            "situation": result["situation"],
+            "situation_pattern": result["situation_pattern"],
+            "context_id": context_id,
+            "strategy_id": strategy_id,
+            "application": result["application"],
+            "candidates": result["candidates"],
+            "applicable_count": result["applicable_count"],
+            "candidate_count": result["candidate_count"],
+            "truncated": result["truncated"],
+            "rationale": result["rationale"],
+            "confidence": result["confidence"],
+            "uncertainties": result["uncertainties"],
+            "provenance": result["provenance"],
+            "lifecycle_state": LifecycleState.ACTIVE.value,
+        }
+
+    def _load_application(self, strategy_application_id, context_id=None):
+        lstore = self._lifecycle_store()
+        try:
+            meta = lstore.get(strategy_application_id)
+        finally:
+            lstore.close()
+        if meta is None:
+            raise ValueError("no such strategy_application_id: %r"
+                             % (strategy_application_id,))
+        content = meta.content or {}
+        if context_id is None:
+            context_id = content.get("context_id")
+        candidates = []
+        for c in content.get("candidate_statuses") or ():
+            candidates.append({
+                "strategy_id": c.get("strategy_id"),
+                "strategy_status": c.get("strategy_status"),
+                "recommended_approach": c.get("recommended_approach"),
+            })
+        if not candidates:
+            for strategy_id in content.get("candidate_ids") or ():
+                status = "applicable" if strategy_id \
+                    == content.get("strategy_id") else "not_applicable"
+                candidates.append({"strategy_id": strategy_id,
+                                   "strategy_status": status,
+                                   "recommended_approach": None})
+        return {
+            "application_id": strategy_application_id,
+            "status": content.get("application_status"),
+            "strategy_id": content.get("strategy_id"),
+            "candidates": candidates,
+            "context_id": context_id or content.get("context_id"),
+            "situation": content.get("situation"),
+            "supporting_experience_ids":
+                content.get("supporting_experience_ids", []),
+        }
+
+    def _strategy_dicts(self, strategy_ids):
+        ids = sorted({str(x) for x in strategy_ids or ()})
+        if not ids:
+            return []
+        sstore = self._strategy_store()
+        try:
+            result = []
+            for strategy_id in ids:
+                strategy = sstore.get(strategy_id)
+                if strategy is not None:
+                    result.append(strategy.to_dict())
+        finally:
+            sstore.close()
+        result.sort(key=lambda s: (s.get("deprecated", False),
+                                   bool(s.get("superseded_by")),
+                                   -float(s.get("confidence") or 0.0),
+                                   str(s.get("strategy_id"))))
+        return result
+
+    def reason(self, situation, strategy_application_id=None,
+               strategy_ids=None, context_id=None, evidence_ids=None,
+               experience_ids=None, knowledge_ids=None, constraints=None,
+               bounds=None, project_id=None):
+        """Deterministic canonical Reasoning over structured inputs.
+
+        Deterministic, bounded and uncertainty-preserving: missing evidence is
+        never invented, conflicting inputs are surfaced, and the result keeps
+        every provenance reference. Persists one REASONING record.
+        """
+        if not isinstance(situation, str) or not situation.strip():
+            raise ValueError("situation must be a non-empty string")
+        pid = project_id or self.project_id
+
+        application = None
+        if strategy_application_id:
+            application = self._load_application(strategy_application_id,
+                                                 context_id)
+            context_id = application.get("context_id") or context_id
+        applicable_ids = [
+            c["strategy_id"] for c in (application or {}).get("candidates")
+            if c.get("strategy_status") == "applicable"] \
+            if application else None
+        strategy_ids = strategy_ids or applicable_ids
+        strategies = self._strategy_dicts(strategy_ids)
+
+        evidences = []
+        for evidence_id in sorted({str(x) for x in evidence_ids or ()}):
+            estore = self._evidence_store()
+            try:
+                record = estore.get(evidence_id)
+            finally:
+                estore.close()
+            if record is not None:
+                evidences.append(record.as_dict())
+
+        experiences = []
+        for experience_id in sorted({str(x) for x in experience_ids or ()}):
+            xstore = self._experience_store()
+            try:
+                record = xstore.get(experience_id)
+            finally:
+                xstore.close()
+            if record is not None:
+                experiences.append(record.as_dict())
+
+        knowledge = []
+        for node_id in sorted({str(x) for x in knowledge_ids or ()}):
+            mem = self._memory()
+            try:
+                node = mem.get_node(node_id)
+            finally:
+                pass
+            if node is not None:
+                knowledge.append(dict(node))
+
+        from ai_engine.reasoning import reason as reason_engine
+        result = reason_engine(
+            situation, application=application, strategies=strategies,
+            knowledge=knowledge, experiences=experiences, evidence=evidences,
+            context_id=context_id, constraints=constraints, bounds=bounds)
+        rs_id = result["reasoning_id"]
+        derived_from = (strategy_application_id,) \
+            if strategy_application_id else (
+                tuple(result["applicable_strategy_ids"])
+                if result["applicable_strategy_ids"] else ())
+        parent_ids = tuple(result["applicable_strategy_ids"])
+
+        lstore = self._lifecycle_store()
+        lstore.save(LifecycleRecord(
+            record_id=rs_id,
+            role=RecordRole.REASONING,
+            provenance=Provenance(
+                record_id=rs_id,
+                origin=Origin.DERIVED,
+                timestamp=_now(),
+                project=pid,
+                context_id=context_id,
+                evidence_ids=tuple(result["inputs"]["evidence_ids"]),
+                confidence=result["confidence"],
+                lifecycle_state=LifecycleState.ACTIVE,
+                parent_record_ids=parent_ids,
+                derived_from=derived_from,
+                created_at=_now(),
+                updated_at=_now(),
+            ),
+            subject="reasoning for situation %r (%s)"
+                    % (result["situation_pattern"], result["status"]),
+            content={
+                "reasoning_status": result["status"],
+                "situation": result["situation"],
+                "situation_pattern": result["situation_pattern"],
+                "context_id": context_id,
+                "strategy_application_id": strategy_application_id,
+                "applicable_strategy_ids": result["applicable_strategy_ids"],
+                "knowledge_ids": result["inputs"]["knowledge_ids"],
+                "experience_ids": result["inputs"]["experience_ids"],
+                "evidence_ids": result["inputs"]["evidence_ids"],
+                "constraints": constraints or {},
+                "conflicts": result["conflicts"],
+                "uncertainties": result["uncertainties"],
+                "recommendation": result["recommendation"],
+                "recommended_approach": result["recommended_approach"],
+                "truncated": result["truncated"],
+            },
+        ))
+        lstore.close()
+        return {
+            "reasoning_id": rs_id,
+            "role": RecordRole.REASONING.value,
+            "origin": Origin.DERIVED.value,
+            "status": result["status"],
+            "situation": result["situation"],
+            "situation_pattern": result["situation_pattern"],
+            "context_id": context_id,
+            "strategy_application_id": strategy_application_id,
+            "applicable_strategy_id": result["applicable_strategy_id"],
+            "applicable_strategy_ids": result["applicable_strategy_ids"],
+            "recommendation": result["recommendation"],
+            "recommended_approach": result["recommended_approach"],
+            "confidence": result["confidence"],
+            "conflicts": result["conflicts"],
+            "uncertainties": result["uncertainties"],
+            "inputs": result["inputs"],
+            "bounds": result["bounds"],
+            "truncated": result["truncated"],
+            "provenance": result["provenance"],
+            "lifecycle_state": LifecycleState.ACTIVE.value,
+        }
+
+    def decide(self, reasoning_id=None, reasoning=None, constraints=None,
+               alternatives=None, project_id=None):
+        """Deterministic canonical Decision under explicit constraints.
+
+        Distinguishes reasoning (what information supports) from decision
+        (which course to select) and never executes anything. May return
+        UNKNOWN / INSUFFICIENT_EVIDENCE rather than inventing certainty.
+        """
+        pid = project_id or self.project_id
+        if reasoning is None:
+            if reasoning_id is None:
+                raise ValueError("reasoning_id or reasoning is required")
+            lstore = self._lifecycle_store()
+            try:
+                meta = lstore.get(reasoning_id)
+            finally:
+                lstore.close()
+            if meta is None:
+                raise ValueError("no such reasoning_id: %r" % (reasoning_id,))
+            content = meta.content or {}
+            reasoning = {
+                "reasoning_id": reasoning_id,
+                "status": content.get("reasoning_status"),
+                "recommendation": content.get("recommendation"),
+                "recommended_approach": content.get("recommended_approach"),
+                "applicable_strategy_id":
+                    (content.get("applicable_strategy_ids") or [None])[0],
+                "strategy_application_id":
+                    content.get("strategy_application_id"),
+                "context_id": content.get("context_id"),
+                "situation": content.get("situation"),
+            }
+        reasoning = dict(reasoning)
+
+        from ai_engine.decision import make_decision
+        decision = make_decision(reasoning, constraints=constraints,
+                                 alternatives=alternatives)
+        dc_id = decision["decision_id"]
+
+        lstore = self._lifecycle_store()
+        lstore.save(LifecycleRecord(
+            record_id=dc_id,
+            role=RecordRole.DECISION,
+            provenance=Provenance(
+                record_id=dc_id,
+                origin=Origin.DERIVED,
+                timestamp=_now(),
+                project=pid,
+                context_id=reasoning.get("context_id"),
+                confidence=decision["confidence"],
+                lifecycle_state=LifecycleState.ACTIVE,
+                parent_record_ids=(decision["strategy_application_id"],)
+                if decision["strategy_application_id"] else (),
+                derived_from=_as_tuple(reasoning.get("reasoning_id")),
+                created_at=_now(),
+                updated_at=_now(),
+            ),
+            subject="decision for situation %r (%s)"
+                    % (reasoning.get("situation") or "",
+                       decision["status"]),
+            content={
+                "decision_status": decision["status"],
+                "situation": reasoning.get("situation"),
+                "context_id": reasoning.get("context_id"),
+                "selected_course": decision["selected_course"],
+                "reasoning_id": reasoning.get("reasoning_id"),
+                "strategy_application_id":
+                    decision["strategy_application_id"],
+                "applicable_strategy_id": decision["applicable_strategy_id"],
+                "constraints": decision["constraints"],
+                "alternatives": decision["alternatives"],
+                "explicit_unknown": decision["explicit_unknown"],
+            },
+        ))
+        lstore.close()
+        return {
+            "decision_id": dc_id,
+            "role": RecordRole.DECISION.value,
+            "origin": Origin.DERIVED.value,
+            "status": decision["status"],
+            "situation": reasoning.get("situation"),
+            "context_id": reasoning.get("context_id"),
+            "selected_course": decision["selected_course"],
+            "selected_option_id": decision["selected_option_id"],
+            "rationale": decision["rationale"],
+            "alternatives": decision["alternatives"],
+            "reasoning_id": reasoning.get("reasoning_id"),
+            "strategy_application_id": decision["strategy_application_id"],
+            "applicable_strategy_id": decision["applicable_strategy_id"],
+            "constraints": decision["constraints"],
+            "confidence": decision["confidence"],
+            "explicit_unknown": decision["explicit_unknown"],
+            "provenance": decision["provenance"],
+            "lifecycle_state": LifecycleState.ACTIVE.value,
+        }
+
+    def plan(self, decision_id=None, decision=None, constraints=None,
+             max_steps=8, project_id=None):
+        """Deterministic canonical Plan over a decided course.
+
+        A plan is an intended sequence of actions, never execution. It marks
+        the PLAN -> ACTION handoff (Phase 29) explicitly and stays not-ready.
+        """
+        pid = project_id or self.project_id
+        if decision is None:
+            if decision_id is None:
+                raise ValueError("decision_id or decision is required")
+            lstore = self._lifecycle_store()
+            try:
+                meta = lstore.get(decision_id)
+            finally:
+                lstore.close()
+            if meta is None:
+                raise ValueError("no such decision_id: %r" % (decision_id,))
+            content = meta.content or {}
+            decision = {
+                "decision_id": decision_id,
+                "status": content.get("decision_status"),
+                "selected_course": content.get("selected_course"),
+                "reasoning_id": content.get("reasoning_id"),
+                "strategy_application_id":
+                    content.get("strategy_application_id"),
+                "applicable_strategy_id": content.get("applicable_strategy_id"),
+                "constraints": content.get("constraints"),
+                "context_id": content.get("context_id"),
+                "situation": content.get("situation"),
+            }
+        decision = dict(decision)
+
+        from ai_engine.plan import build_plan
+        plan_result = build_plan(
+            decision, situation=decision.get("situation"),
+            constraints=constraints, max_steps=max_steps)
+        pl_id = plan_result["plan_id"]
+        decision_id = decision.get("decision_id")
+
+        lstore = self._lifecycle_store()
+        lstore.save(LifecycleRecord(
+            record_id=pl_id,
+            role=RecordRole.PLAN,
+            provenance=Provenance(
+                record_id=pl_id,
+                origin=Origin.DERIVED,
+                timestamp=_now(),
+                project=pid,
+                context_id=decision.get("context_id"),
+                lifecycle_state=LifecycleState.ACTIVE,
+                parent_record_ids=(decision_id,),
+                derived_from=(decision_id,),
+                created_at=_now(),
+                updated_at=_now(),
+            ),
+            subject="intended plan for decision %s (%s)"
+                    % (decision_id, plan_result["status"]),
+            content={
+                "plan_status": plan_result["status"],
+                "situation": plan_result["situation"],
+                "context_id": decision.get("context_id"),
+                "decision_id": decision_id,
+                "ordered_steps": plan_result["ordered_steps"],
+                "preconditions": plan_result["preconditions"],
+                "expected_observations": plan_result["expected_observations"],
+                "verification_requirements":
+                    plan_result["verification_requirements"],
+                "constraints": plan_result["constraints"],
+                "action_handoff": plan_result["action_handoff"],
+                "executed": False,
+            },
+        ))
+        lstore.close()
+        return {
+            "plan_id": pl_id,
+            "role": RecordRole.PLAN.value,
+            "origin": Origin.DERIVED.value,
+            "status": plan_result["status"],
+            "situation": plan_result["situation"],
+            "context_id": decision.get("context_id"),
+            "decision_id": decision_id,
+            "ordered_steps": plan_result["ordered_steps"],
+            "preconditions": plan_result["preconditions"],
+            "expected_observations": plan_result["expected_observations"],
+            "verification_requirements":
+                plan_result["verification_requirements"],
+            "constraints": plan_result["constraints"],
+            "action_handoff": plan_result["action_handoff"],
+            "provenance": plan_result["provenance"],
+            "lifecycle_state": LifecycleState.ACTIVE.value,
+        }
+
+    def plan_from_experiences(self, situation, experience_ids,
+                              context_id=None, constraints=None, max_steps=8,
+                              min_samples=None, project_id=None):
+        """Deterministic end-to-end canonical path (Phase 28).
+
+        Runs the full chain
+        experience -> learning -> strategy -> strategy application ->
+        reasoning -> decision -> plan and returns every derived id.
+        Nothing is executed and no context is written.
+        """
+        if not isinstance(situation, str) or not situation.strip():
+            raise ValueError("situation must be a non-empty string")
+        if not isinstance(experience_ids, (list, tuple)) or not experience_ids:
+            raise ValueError("experience_ids must be be a non-empty list")
+        pid = project_id or self.project_id
+        strategies = self.derive_strategies(
+            experience_ids, project_id=pid, min_samples=min_samples)
+        strategy_ids = [s["strategy_id"] for s in strategies["strategies"]]
+
+        if context_id is None:
+            xstore = self._experience_store()
+            context_ids = []
+            try:
+                for sid in sorted({str(x) for x in experience_ids}):
+                    record = xstore.get(sid)
+                    if record is not None and record.context_id:
+                        context_ids.append(record.context_id)
+            finally:
+                xstore.close()
+            context_id = context_ids[0] if context_ids else None
+
+        application = self.apply_strategy(
+            situation, strategy_ids=strategy_ids, context_id=context_id,
+            project_id=pid)
+        reasoning = self.reason(
+            situation, strategy_application_id=application["application_id"],
+            context_id=context_id,
+            experience_ids=application["provenance"]["supporting_experience_ids"],
+            evidence_ids=application["provenance"]["supporting_evidence_ids"],
+            constraints=constraints, project_id=pid)
+        decision = self.decide(reasoning=reasoning, constraints=constraints,
+                               project_id=pid)
+        plan = self.plan(decision=decision, constraints=constraints,
+                         max_steps=max_steps, project_id=pid)
+        return {
+            "situation": situation,
+            "learning_id": strategies["learning_id"],
+            "strategy_ids": strategy_ids,
+            "strategy_application_id": application["application_id"],
+            "strategy_application_status": application["status"],
+            "reasoning_id": reasoning["reasoning_id"],
+            "reasoning_status": reasoning["status"],
+            "decision_id": decision["decision_id"],
+            "decision_status": decision["status"],
+            "plan_id": plan["plan_id"],
+            "plan_status": plan["status"],
+            "chain": ["experience", "learning", "strategy",
+                      "strategy_application", "reasoning", "decision",
+                      "plan"],
+            "strategy_application": application,
+            "reasoning": reasoning,
+            "decision": decision,
+            "plan": plan,
+            "note": "the intelligence loop ends at the plan boundary; no "
+                    "action was executed and no context was written",
+        }
+
+    # ------------------------------------------------------------------
     # Trace / describe / summary — provenance & lifecycle inspection
     # ------------------------------------------------------------------
 
@@ -1073,8 +1641,7 @@ class LifecycleService:
         if role == "strategy":
             sstore = self._strategy_store()
             try:
-                sstore.set_deprecated(record_id, True, _now(),
-                                      evidence_ids or (), reason)
+                sstore.set_deprecated(record_id, True, _now(), reason)
             except KeyError:
                 pass
             sstore.close()
@@ -1141,8 +1708,7 @@ class LifecycleService:
         if role == "strategy":
             sstore = self._strategy_store()
             try:
-                sstore.set_superseded_by(old_id, new_id, _now(),
-                                         evidence_ids or (), reason)
+                sstore.set_superseded_by(old_id, new_id, _now(), reason)
                 changed.append("strategies.superseded_by")
             except KeyError:
                 pass

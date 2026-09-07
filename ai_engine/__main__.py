@@ -303,6 +303,40 @@ def cmd_lifecycle_summary(args):
     return 0
 
 
+def cmd_lifecycle_plan(args):
+    project_id = getattr(args, "project", None) or "default"
+    from ai_engine.lifecycle_service import LifecycleService
+    svc = LifecycleService(project_id=project_id)
+    experience_ids = [x.strip() for x in
+                      getattr(args, "experience_ids", "").split(",") if x.strip()]
+    constraints = getattr(args, "constraints", None)
+    if constraints:
+        try:
+            constraints = json.loads(constraints)
+        except ValueError as e:
+            return fail("invalid_argument", "constraints must be JSON: %s" % e)
+    try:
+        result = svc.plan_from_experiences(
+            args.situation, experience_ids,
+            context_id=getattr(args, "context_id", None),
+            constraints=constraints,
+            max_steps=getattr(args, "max_steps", None) or 8,
+            min_samples=getattr(args, "min_samples", None),
+            project_id=project_id)
+    except ValueError as e:
+        return fail("invalid_argument", str(e))
+    if getattr(args, "json", False):
+        print(to_json(result))
+    else:
+        print("plan %s [%s] via %s -> %s -> %s (decision %s)" % (
+            result["plan_id"], result["plan_status"],
+            result["strategy_application_status"], result["reasoning_status"],
+            result["decision_status"], result["decision_id"]))
+        for step in result["plan"]["ordered_steps"]:
+            print("  step %s: %s" % (step["step_id"], step["action"]))
+    return 0
+
+
 def cmd_context_show(args):
     project_id = getattr(args, "project", None) or "default"
     context_id = args.context_id
@@ -803,6 +837,16 @@ def main(argv=None):
     lc7.add_argument("--project", dest="project", default=None, help="project id")
     lc7.add_argument("--json", dest="json", action="store_true", help="JSON output")
     lc7.set_defaults(func=cmd_lifecycle_summary)
+    lc8 = lc_sub.add_parser("plan", help="deterministic plan from experiences")
+    lc8.add_argument("situation", help="current situation/request")
+    lc8.add_argument("experience_ids", help="comma-separated experience ids")
+    lc8.add_argument("--context-id", dest="context_id", default=None, help="context id")
+    lc8.add_argument("--constraints", dest="constraints", default=None, help="JSON decision constraints")
+    lc8.add_argument("--max-steps", dest="max_steps", type=int, default=None, help="max plan steps")
+    lc8.add_argument("--min-samples", dest="min_samples", type=int, default=None, help="minimum evidence samples")
+    lc8.add_argument("--project", dest="project", default=None, help="project id")
+    lc8.add_argument("--json", dest="json", action="store_true", help="JSON output")
+    lc8.set_defaults(func=cmd_lifecycle_plan)
 
     # status
     p = sub.add_parser("status", help="project status")

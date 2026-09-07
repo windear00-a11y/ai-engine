@@ -176,13 +176,26 @@ OPERATIONS = {
             "project_id": _is_project_id,
         },
     },
+    "lifecycle.plan": {
+        "required": {
+            "situation": _is_nonempty_string,
+            "experience_ids": _is_list,
+        },
+        "optional": {
+            "context_id": _is_string_or_none,
+            "constraints": _is_dict,
+            "max_steps": _is_positive_int,
+            "min_samples": _is_positive_int,
+            "project_id": _is_project_id,
+        },
+    },
 }
 
 DEFAULT_OPERATION_ORDER = (
     "remember", "recall", "get", "provenance", "inspect", "context.get",
     "lifecycle.ingest", "lifecycle.experience", "lifecycle.learning",
     "lifecycle.strategy", "lifecycle.trace", "lifecycle.describe",
-    "lifecycle.summary",
+    "lifecycle.summary", "lifecycle.plan",
 )
 
 MAX_RESULTS = 100

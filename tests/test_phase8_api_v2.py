@@ -33,7 +33,7 @@ EXPECTED_V2_OPS = ("remember", "recall", "get", "provenance", "inspect",
                    "lifecycle.ingest", "lifecycle.experience",
                    "lifecycle.learning", "lifecycle.strategy",
                    "lifecycle.trace", "lifecycle.describe",
-                   "lifecycle.summary")
+                   "lifecycle.summary", "lifecycle.plan")
 
 def _sha256(p):
     import hashlib

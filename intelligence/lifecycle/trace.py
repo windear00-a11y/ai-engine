@@ -68,12 +68,25 @@ def normalize_entry(record) -> dict:
         "content": content,
         "derived_from": derived_from,
         "parent_record_ids": parent_ids,
-        "evidence_ids": evidence_ids,
+        "evidence_ids": list(provenance.get("evidence_ids")
+                             or record.get("evidence_ids")
+                             or content.get("evidence_ids") or ()),
         "outcome_id": outcome_id,
         "context_id": context_id,
+        "reasoning_id": content.get("reasoning_id")
+        or record.get("reasoning_id"),
+        "decision_id": content.get("decision_id")
+        or record.get("decision_id"),
+        "strategy_application_id": content.get("strategy_application_id")
+        or record.get("strategy_application_id"),
+        "applicable_strategy_id": content.get("applicable_strategy_id")
+        or record.get("applicable_strategy_id"),
         "experience_ids": list(content.get("experience_ids")
                                or content.get("supporting_experience_ids")
                                or record.get("experience_ids") or ()),
+        "knowledge_ids": list(content.get("knowledge_ids") or ()),
+        "strategy_ids": list(content.get("applicable_strategy_ids")
+                             or content.get("strategy_ids") or ()),
         "source_observation_id": (content.get("source_observation_id")
                                   or record.get("source_observation_id")),
     }
@@ -82,6 +95,10 @@ def normalize_entry(record) -> dict:
 def _role_default_origin(role):
     defaults = {
         "strategy": "derived",
+        "strategy_application": "derived",
+        "reasoning": "derived",
+        "decision": "derived",
+        "plan": "derived",
         "learning": "derived",
         "experience": "observed",
         "outcome": "observed",
@@ -158,6 +175,43 @@ def derive_child_links(entry, accessor) -> list:
         add("in_context", "context", entry.get("context_id"))
         for cid in sorted(entry.get("parent_record_ids") or ()):
             add("from_record", "source_record", cid)
+
+    # Phase 28 derived chain: strategy_application -> strategy;
+    # reasoning -> strategy_application / strategy / evidence / experience /
+    # knowledge / context; decision -> reasoning / strategy_application /
+    # strategy; plan -> decision.
+    elif role == "strategy_application":
+        for cid in sorted(set(entry.get("derived_from") or ())):
+            add("derived_from", "strategy", cid)
+        for cid in sorted(entry.get("experience_ids") or ()):
+            add("from_experience", "experience", cid)
+        for cid in sorted(entry.get("evidence_ids") or ()):
+            add("supported_by", "evidence", cid)
+        add("in_context", "context", entry.get("context_id"))
+    elif role == "reasoning":
+        for cid in sorted(entry.get("derived_from") or ()):
+            add("based_on_application", "strategy_application", cid)
+        for cid in sorted(entry.get("strategy_ids") or ()):
+            add("applies_strategy", "strategy", cid)
+        for cid in sorted(entry.get("evidence_ids") or ()):
+            add("supported_by", "evidence", cid)
+        for cid in sorted(entry.get("experience_ids") or ()):
+            add("from_experience", "experience", cid)
+        for cid in sorted(entry.get("knowledge_ids") or ()):
+            add("informed_by", "knowledge", cid)
+        add("in_context", "context", entry.get("context_id"))
+    elif role == "decision":
+        for cid in sorted(entry.get("derived_from") or ()):
+            add("derived_from", "reasoning", cid)
+        for cid in sorted(entry.get("parent_record_ids") or ()):
+            add("from_application", "strategy_application", cid)
+        add("applied_strategy", "strategy", entry.get("applicable_strategy_id"))
+        add("applied_strategy", "strategy_application",
+            entry.get("strategy_application_id"))
+    elif role == "plan":
+        for cid in sorted(set(entry.get("derived_from") or ())):
+            add("derived_from", "decision", cid)
+        add("based_on_decision", "decision", entry.get("decision_id"))
 
     # Dedupe (relation, role, id) while preserving the deterministic order.
     seen = set()

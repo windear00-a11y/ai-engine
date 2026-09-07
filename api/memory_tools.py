@@ -159,6 +159,15 @@ class MemoryToolInterface:
     def _op_lifecycle_summary(self, project_id=None):
         return self._api.lifecycle_summary(project_id=project_id)
 
+    def _op_lifecycle_plan(self, situation, experience_ids, context_id=None,
+                           constraints=None, max_steps=None, min_samples=None,
+                           project_id=None):
+        return self._api.lifecycle_plan(
+            situation=situation, experience_ids=experience_ids,
+            context_id=context_id, constraints=constraints,
+            max_steps=max_steps, min_samples=min_samples,
+            project_id=project_id)
+
 
 def execute(request, data_root=None):
     iface = MemoryToolInterface(data_root=data_root)
