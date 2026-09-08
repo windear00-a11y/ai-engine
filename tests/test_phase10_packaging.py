@@ -54,7 +54,7 @@ class PyprojectValidityTests(unittest.TestCase):
             data = tomllib.load(f)
         self.assertIn("project", data)
         self.assertIn("name", data["project"])
-        self.assertEqual(data["project"]["name"], "ai-engine")
+        self.assertEqual(data["project"]["name"], "kgheer-core")
         self.assertIn("version", data["project"])
         self.assertIn("scripts", data["project"])
         self.assertIn("ai-engine", data["project"]["scripts"])

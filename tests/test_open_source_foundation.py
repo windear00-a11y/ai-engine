@@ -88,12 +88,13 @@ class RepositoryHygieneTests(unittest.TestCase):
     """Scans tracked text files for accidental machine-specific paths and
     key material. Test files (which may use '/tmp' or dummy secrets) are
     excluded from the machine-path check; the public docs are always checked.
+    Ellipsis stub examples such as `/root/...` are allowed in docs.
     """
 
     TRACKED = []
     _PRIVATE_KEY_RE = re.compile(
         r"BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY", re.IGNORECASE)
-    _MACHINE_PATH_RE = re.compile(r"/(root|Users|home/mirror|mnt/sdcard)/")
+    _MACHINE_PATH_RE = re.compile(r"/(?:root|Users|home/mirror|mnt/sdcard)/(?!\.{3})")
 
     @classmethod
     def setUpClass(cls):

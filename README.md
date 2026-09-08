@@ -6,9 +6,9 @@ a deterministic, per-project, stdlib-only system for storing knowledge, recall,
 lifecycle experience tracking, and provenance chains. It is designed to be consumed
 as a reusable library by external applications.
 
-The current `ai-engine` Python package is the technical foundation of **KGHEER Core**.
-Existing module/import paths (`ai_engine`, `knowledge_client`, ...) and the distribution
-name are intentionally preserved for compatibility.
+The current `kgheer-core` Python distribution provides the technical foundation of
+**KGHEER Core**. Existing module/import paths (`ai_engine`, `knowledge_client`, ...)
+and the CLI command names are intentionally preserved for compatibility.
 
 **This is not a diary, notes app, or UI.** It is a backend/library that external
 projects install and integrate through a documented public boundary.
@@ -42,10 +42,15 @@ projects install and integrate through a documented public boundary.
 ## Quick Start
 
 ```sh
-python -m pip install ai_engine-<version>-py3-none-any.whl
+python -m pip install kgheer-core
 ```
 
-The wheel contains everything needed (zero runtime dependencies).
+The wheel contains everything needed (zero runtime dependencies). See
+[Build from Source](#build-from-source-contributors) to build the wheel yourself.
+
+> **Package identities:** PyPI distribution `kgheer-core` · Python import
+> `ai_engine` / `knowledge_client` · CLI `ai-engine` / `ai_engine` · data directory
+> `~/.ai-engine`.
 
 ## Usage
 
@@ -100,7 +105,10 @@ Project data is isolated by project ID. Packages installed from the wheel are im
 uninstalling does not delete data. See [docs/INTEGRATION.md](docs/INTEGRATION.md) for the
 complete integration reference and the public/internal boundary.
 
-## Build
+## Build from Source (Contributors)
+
+End users install the published package with `pip install kgheer-core` (see
+[Quick Start](#quick-start)). Building from a source checkout is for contributors:
 
 ```sh
 python -m pip install --upgrade setuptools wheel build

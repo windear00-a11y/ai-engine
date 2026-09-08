@@ -109,7 +109,7 @@ class TestPackagingMetadata(unittest.TestCase):
 
     def test_project_identity(self):
         proj = self.meta["project"]
-        self.assertEqual(proj["name"], "ai-engine")
+        self.assertEqual(proj["name"], "kgheer-core")
         self.assertRegex(proj["version"], r"^\d+\.\d+\.\d+$")
         self.assertEqual(proj["requires-python"], ">=3.10")
 
@@ -150,8 +150,8 @@ class TestWheelArtifact(unittest.TestCase):
             cwd=_REPO_ROOT, env=env, check=True, capture_output=True,
             timeout=900,
         )
-        self.wheel = os.path.join(out, "ai_engine-0.10.0-py3-none-any.whl")
-        self.sdist = os.path.join(out, "ai_engine-0.10.0.tar.gz")
+        self.wheel = os.path.join(out, "kgheer_core-0.10.0-py3-none-any.whl")
+        self.sdist = os.path.join(out, "kgheer_core-0.10.0.tar.gz")
         self.assertTrue(os.path.exists(self.wheel))
         self.assertTrue(os.path.exists(self.sdist))
 
@@ -187,12 +187,12 @@ class TestWheelArtifact(unittest.TestCase):
 
     def test_wheel_metadata(self):
         with zipfile.ZipFile(self.wheel) as z:
-            meta = z.read("ai_engine-0.10.0.dist-info/METADATA").decode()
-            self.assertIn("Name: ai-engine", meta)
+            meta = z.read("kgheer_core-0.10.0.dist-info/METADATA").decode()
+            self.assertIn("Name: kgheer-core", meta)
             self.assertIn("Version: 0.10.0", meta)
             self.assertIn("Requires-Python: >=3.10", meta)
             self.assertNotIn("Requires-Dist", meta)
-            ep = z.read("ai_engine-0.10.0.dist-info/entry_points.txt").decode()
+            ep = z.read("kgheer_core-0.10.0.dist-info/entry_points.txt").decode()
             self.assertIn("ai_engine = ai_engine.__main__:main", ep)
             self.assertIn("ai-engine = ai_engine.__main__:main", ep)
 
@@ -238,7 +238,7 @@ class TestCleanInstall(unittest.TestCase):
             cwd=_REPO_ROOT, env=env, check=True, capture_output=True,
             timeout=900,
         )
-        wheel = os.path.join(cls.tmp, "ai_engine-0.10.0-py3-none-any.whl")
+        wheel = os.path.join(cls.tmp, "kgheer_core-0.10.0-py3-none-any.whl")
         venv = os.path.join(cls.tmp, "venv")
         subprocess.run([sys.executable, "-m", "venv", venv], check=True,
                        capture_output=True, timeout=300)
@@ -439,16 +439,16 @@ class TestCleanInstall(unittest.TestCase):
         self._cli(["ai_engine", "remember", "--project", "keep",
                    "survives reinstall"], data_root=data)
         pipex = self.python.replace("bin/python", "bin/pip")
-        subprocess.run([pipex, "uninstall", "-y", "ai-engine"], check=True,
+        subprocess.run([pipex, "uninstall", "-y", "kgheer-core"], check=True,
                        capture_output=True, timeout=300)
         os.makedirs(os.path.join(self.tmp, "dist"))
         shutil.copy(
-            os.path.join(self.tmp, "ai_engine-0.10.0-py3-none-any.whl"),
-            os.path.join(self.tmp, "dist", "ai_engine-0.10.0-py3-none-any.whl"),
+            os.path.join(self.tmp, "kgheer_core-0.10.0-py3-none-any.whl"),
+            os.path.join(self.tmp, "dist", "kgheer_core-0.10.0-py3-none-any.whl"),
         )
         subprocess.run(
             [pipex, "install", "--no-deps",
-             os.path.join(self.tmp, "dist", "ai_engine-0.10.0-py3-none-any.whl")],
+             os.path.join(self.tmp, "dist", "kgheer_core-0.10.0-py3-none-any.whl")],
             check=True, capture_output=True, timeout=600,
         )
         self.assertTrue(os.path.exists(

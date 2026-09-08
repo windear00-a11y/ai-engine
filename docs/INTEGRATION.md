@@ -1,7 +1,7 @@
 # KGHEER Core — External Integration Reference
 
 This document is the authoritative guide for consuming **KGHEER Core** (the
-open-source `ai-engine` Python distribution) from an external project. It defines the
+open-source `kgheer-core` Python distribution) from an external project. It defines the
 **supported public boundary**, the integration patterns, the HTTP v2 envelope,
 project/data isolation, and the modules external consumers must **not** depend on.
 
@@ -23,7 +23,13 @@ through the public surfaces below.
 
 ## 2. Installation
 
-### 2.1 Build a wheel from source
+### 2.1 Install from PyPI (recommended)
+
+```sh
+python -m pip install kgheer-core
+```
+
+### 2.2 Build a wheel from source (contributors)
 
 ```sh
 python -m pip install --upgrade setuptools wheel build
@@ -32,15 +38,17 @@ python -m build
 
 Artifacts (wheel + sdist) are written to `dist/`.
 
-### 2.2 Install the wheel
+### 2.3 Install the built wheel
 
 ```sh
-python -m pip install dist/ai_engine-<version>-py3-none-any.whl
+python -m pip install dist/kgheer_core-<version>-py3-none-any.whl
 ```
 
 Install into any clean environment. The wheel is self-contained; **do not** put the
 source checkout on `PYTHONPATH`. Runtime dependencies: **none** (Python stdlib only;
-requires Python >= 3.10).
+requires Python >= 3.10). (PyPI distribution `kgheer-core`; Python imports
+`ai_engine` / `knowledge_client`; CLI `ai-engine` / `ai_engine`; data directory
+`~/.ai-engine`.)
 
 ---
 
@@ -52,7 +60,7 @@ internal implementation detail.
 | Surface | Entry point | Transport | Notes |
 |---|---|---|---|
 | SDK (remote) | `knowledge_client.MemoryClient` | `HttpMemoryTransport` (stdlib `http.client`) | Recommended for remote/any-language clients |
-| SDK (in-process / stdio) | `knowledge_client.MemoryClient` + `MemoryInProcessTransport` / `SessionTransport` | in-process / subprocess | Requires ai-engine installed in the consuming interpreter |
+| SDK (in-process / stdio) | `knowledge_client.MemoryClient` + `MemoryInProcessTransport` / `SessionTransport` | in-process / subprocess | Requires the `kgheer-core` distribution installed in the consuming interpreter |
 | In-process library | `ai_engine.lifecycle_service.LifecycleService` | direct | Direct access to the lifecycle/trace API |
 | CLI | `ai_engine` / `ai-engine` console command | process | Shell scripting |
 | HTTP server | `ai_engine serve` | HTTP | `/health`, `/v2/execute`, `/v1/execute` (legacy) |
@@ -64,7 +72,7 @@ internal implementation detail.
   independent of internals. The in-process/stdio transports (`MemoryInProcessTransport`,
   `InProcessTransport`, `SessionTransport`, `MemorySessionTransport`) intentionally
   lazy-import internal handlers because they execute within the consuming interpreter —
-  they require ai-engine installed in that interpreter.
+  they require the `kgheer-core` distribution installed in that interpreter.
 - `api.contract_v2` / `api.contract` — immutable contract specifications (vanilla type
   definitions and validators — importable for validation but not required).
 
@@ -215,7 +223,7 @@ res = client.recall(query="hello", project_id="myapp")
 ### In-process (same interpreter, no server)
 
 The in-process transports execute against the installed package directly and require
-ai-engine to be installed in the consuming interpreter:
+the `kgheer-core` distribution to be installed in the consuming interpreter:
 
 ```python
 from knowledge_client import MemoryClient, MemoryInProcessTransport
