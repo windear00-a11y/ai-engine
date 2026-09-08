@@ -8,7 +8,7 @@ before getting started.
 
 ## Project overview
 
-- **KGHEER Core** is the open-source technical core (bundled as the `ai-engine`
+- **KGHEER Core** is the open-source technical core (bundled as the `kgheer-core`
   Python distribution). It is a local-first persistent intelligence library:
   deterministic, per-project, stdlib-only storage and recall of knowledge,
   experience, and lifecycle history for external applications.

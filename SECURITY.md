@@ -3,8 +3,9 @@
 ## Supported Versions
 
 Security fixes are applied to the current release. Older releases are handled
-on a best-effort basis. Because the `ai-engine` package ships with **no
-runtime dependencies** and is locally executed, users are encouraged to stay on
+on a best-effort basis. Because the `kgheer-core` package (which ships the
+`ai-engine` CLI) ships with **no runtime dependencies** and is locally executed,
+users are encouraged to stay on
 the latest release.
 
 | Version | Supported          |

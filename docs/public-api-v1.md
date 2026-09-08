@@ -1,7 +1,7 @@
 # Knowledge Engine Public Contract v1
 
-> **Note:** This is the public contract of **KGHEER Core** (distributed as the
-> `ai-engine` Python package). The "Knowledge Engine" name below refers to the
+> **Note:** This is the public contract of **KGHEER Core** (distributed as
+> `kgheer-core`). The "Knowledge Engine" name below refers to the
 > same technical core.
 
 > **Version:** 1

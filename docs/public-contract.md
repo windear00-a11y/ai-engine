@@ -1,7 +1,7 @@
 # Persistent Intelligence System — Public Contract (canonical)
 
-> **Note:** This is the public contract of **KGHEER Core** (distributed as the
-> `ai-engine` Python package). The historical "Persistent Intelligence System" /
+> **Note:** This is the public contract of **KGHEER Core** (distributed as
+> `kgheer-core`). The historical "Persistent Intelligence System" /
 > "Knowledge Engine" names below refer to the same technical core.
 
 > **Status:** authoritative description of the ACTUAL public interface.

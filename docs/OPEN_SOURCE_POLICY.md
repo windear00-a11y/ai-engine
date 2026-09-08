@@ -2,7 +2,7 @@
 
 ## KGHEER Core is free and open source
 
-**KGHEER Core** (distributed today as the `ai-engine` Python package) is a
+**KGHEER Core** (distributed today as the `kgheer-core` Python package) is a
 free and open-source project released under the
 [Apache License, Version 2.0](../LICENSE).
 
