@@ -1,6 +1,7 @@
 # Knowledge Engine Web App v1
 
-A read-only browser for the Knowledge Engine Public Contract v1.
+> **Note:** Part of **KGHEER Core**'s repository. A read-only browser for the
+> Knowledge Engine Public Contract v1.
 
 ## Architecture
 

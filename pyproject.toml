@@ -5,18 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ai-engine"
 version = "0.10.0"
-description = "Local-first Persistent Intelligence backend/library — generic memory/recall/experience for external applications"
+description = "KGHEER Core — Local-first Persistent Intelligence backend/library. Generic memory/recall/experience for external applications."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 authors = [
-    { name = "AI Engine" }
+    { name = "KGHEER Project" }
 ]
-license = { text = "MIT" }
-keywords = ["persistent-intelligence", "memory", "local-first", "deterministic", "backend"]
+license = { text = "Apache-2.0" }
+keywords = ["kgheer", "persistent-intelligence", "memory", "local-first", "deterministic", "backend", "open-source"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Topic :: Software Development :: Libraries",
 ]

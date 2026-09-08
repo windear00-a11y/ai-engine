@@ -1,8 +1,8 @@
 # Knowledge Engine Python Client SDK
 
-A thin, developer-friendly Python client for the Knowledge Engine's stable
-tool-call contract, **Public Contract v1** (see `docs/public-api-v1.md`). It is
-intentionally small:
+Part of **KGHEER Core**'s public surface. A thin, developer-friendly Python client
+for the stable tool-call contract, **Public Contract v1** (see
+`docs/public-api-v1.md`). It is intentionally small:
 
 * builds contract-shaped requests for the six approved operations
   (`search`, `get`, `related`, `follow`, `provenance`, `inspect`);

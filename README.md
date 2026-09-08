@@ -1,11 +1,43 @@
-# AI Engine
+# KGHEER Core
 
-Local-first persistent intelligence backend. A deterministic, per-project, stdlib-only
-system for storing knowledge, recall, lifecycle experience tracking, and provenance
-chains. Designed to be consumed as a reusable library by external applications.
+**KGHEER** is a free and open-source (Apache-2.0) project. **KGHEER Core** is its
+open-source technical core: a local-first persistent intelligence backend —
+a deterministic, per-project, stdlib-only system for storing knowledge, recall,
+lifecycle experience tracking, and provenance chains. It is designed to be consumed
+as a reusable library by external applications.
+
+The current `ai-engine` Python package is the technical foundation of **KGHEER Core**.
+Existing module/import paths (`ai_engine`, `knowledge_client`, ...) and the distribution
+name are intentionally preserved for compatibility.
 
 **This is not a diary, notes app, or UI.** It is a backend/library that external
 projects install and integrate through a documented public boundary.
+
+## Ecosystem
+
+| Project | Status |
+|---|---|
+| **KGHEER Core** | This repository — the open-source technical core |
+| **KGHEER SDK** | Separate consumer/application (planned ecosystem name) |
+| **KGHEER CLI** | Separate consumer/application (planned ecosystem name) |
+| **KGHEER Diary** | Separate consumer/application (planned ecosystem name) |
+| **KGHEER Notes** | Separate consumer/application (planned ecosystem name) |
+| **KGHEER Plugins** | Separate ecosystem surface (planned ecosystem name) |
+
+## Open Source
+
+- KGHEER Core is **free and open source** under the
+  [Apache License, Version 2.0](LICENSE).
+- **Commercial use is allowed and free.** There is no mandatory revenue share for
+  users of the core.
+- Future paid products/services, if any, must not silently turn the open-source core
+  into a restricted product. See [docs/OPEN_SOURCE_POLICY.md](docs/OPEN_SOURCE_POLICY.md).
+
+## Project Status
+
+- Local-first, deterministic, per-project, stdlib-only: **no network, no LLM**.
+- v2 API contract: 17 operations, frozen. v1 legacy contract (read-only): frozen.
+- Commitment to backward compatibility for the Python imports, CLI, and v2 API contract.
 
 ## Quick Start
 
@@ -58,7 +90,7 @@ results = client.recall(query="hello", project_id="myapp")
 
 ## How It Works
 
-ai-engine stores data under a configurable **data root** (one directory per project):
+KGHEER Core stores data under a configurable **data root** (one directory per project):
 
 - `AI_ENGINE_DATA_DIR` environment variable, **or**
 - `$XDG_DATA_HOME/ai-engine`, **or**
@@ -66,7 +98,7 @@ ai-engine stores data under a configurable **data root** (one directory per proj
 
 Project data is isolated by project ID. Packages installed from the wheel are immutable;
 uninstalling does not delete data. See [docs/INTEGRATION.md](docs/INTEGRATION.md) for the
-complete integration reference.
+complete integration reference and the public/internal boundary.
 
 ## Build
 
@@ -105,6 +137,19 @@ All internal storage (`intelligence/*`, `retrieval/*`, `tools/permissions/*`) is
 implementation detail and must not be imported directly by external consumers.
 See [docs/INTEGRATION.md](docs/INTEGRATION.md) for the public/internal boundary.
 
+## Contributing
+
+KGHEER Core welcomes community contributions. See:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute, issue/PR expectations,
+  testing expectations, contribution standards, and the DCO sign-off process.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — community standards.
+- [SECURITY.md](SECURITY.md) — how to report security issues.
+- [docs/OPEN_SOURCE_POLICY.md](docs/OPEN_SOURCE_POLICY.md) — open-source/commercial-use policy.
+
+There is **no CLA**; contributions use the Developer Certificate of Origin (DCO) and
+remain subject to the project's Apache-2.0 licensing terms.
+
 ## Known Limitations
 
 - The v1 legacy HTTP `/v1/execute` endpoint requires passing `--db` in a standalone
@@ -112,3 +157,8 @@ See [docs/INTEGRATION.md](docs/INTEGRATION.md) for the public/internal boundary.
   integrations.
 - The system Python on some platforms may lack pip/ensurepip; use a Python that provides
   pip/venv to build and install.
+
+## License
+
+Copyright 2026 The KGHEER Authors. Licensed under the
+[Apache License, Version 2.0](LICENSE).

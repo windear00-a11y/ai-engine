@@ -38,6 +38,10 @@ credentials.*
 .DS_Store
 Thumbs.db
 
+# --- Internal development automation / workflow state (not public) ---
+.opencode/
+.workflow/
+
 # --- Temporary / generated files ---
 *.log
 tmp/

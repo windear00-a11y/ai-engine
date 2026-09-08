@@ -1,13 +1,13 @@
 # Knowledge Engine CLI
 
-The command-line client (`ai-engine`, equivalently `python -m ai_engine`) is a
-front end over the public contract. Its primary surface is the **v2 /
-lifecycle CLI** (see [docs/public-contract.md](public-contract.md)): memory
-operations that persist in per-project stores and a nine-command `lifecycle`
-subcommand that drives the canonical backend loop (acquisition, experience,
-learning, strategy, planning, and authority-gated execution). The six v1
-operations remain available as legacy subcommands that are read-only clients of
-Public Contract v1 (see [docs/public-api-v1.md](public-api-v1.md)).
+The command-line client (`ai-engine`, equivalently `python -m ai_engine`) is part of
+**KGHEER Core**'s public surface: a front end over the public contract. Its primary
+surface is the **v2 / lifecycle CLI** (see [docs/public-contract.md](public-contract.md)):
+memory operations that persist in per-project stores and a nine-command `lifecycle`
+subcommand that drives the canonical backend loop (acquisition, experience, learning,
+strategy, planning, and authority-gated execution). The six v1 operations remain
+available as legacy subcommands that are read-only clients of Public Contract v1 (see
+[docs/public-api-v1.md](public-api-v1.md)).
 
 This document describes command syntax and presentation choices. It does
 **not** restate the full contract specification — consult the contract

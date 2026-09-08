@@ -1,15 +1,20 @@
-# ai-engine — External Integration Reference
+# KGHEER Core — External Integration Reference
 
-This document is the authoritative guide for consuming **ai-engine** from an external
-project. It defines the **supported public boundary**, the four integration patterns,
-the HTTP v2 envelope, project/data isolation, and the modules external consumers must
-**not** depend on.
+This document is the authoritative guide for consuming **KGHEER Core** (the
+open-source `ai-engine` Python distribution) from an external project. It defines the
+**supported public boundary**, the integration patterns, the HTTP v2 envelope,
+project/data isolation, and the modules external consumers must **not** depend on.
+
+**KGHEER Core** is the open-source technical foundation of the KGHEER project
+ecosystem (KGHEER SDK, KGHEER CLI, KGHEER Diary, KGHEER Notes, KGHEER Plugins).
+This document keeps the historical module/import names (`ai_engine`,
+`knowledge_client`, ...) because they are the stable technical contract.
 
 ---
 
-## 1. What ai-engine is
+## 1. What KGHEER Core is
 
-ai-engine is a **local-first, deterministic, per-project persistent intelligence
+KGHEER Core is a **local-first, deterministic, per-project persistent intelligence
 backend** (stdlib-only, no runtime dependencies). It is a library/backend, **not** a
 diary, notes, or UI application. External applications install the wheel and integrate
 through the public surfaces below.
@@ -90,6 +95,22 @@ notice. Do not import them from an external project:
   (the contracts in `api/contract*.py` are the stable spec).
 
 Consumers never need to know what database files or schema are used.
+
+### Repository-level public/internal boundary
+
+The following repository paths are **internal operational development material**,
+not part of the public API or integration surface. They are not shipped in the wheel
+and may change or disappear without notice:
+
+- `benchmarks/` — internal performance harnesses.
+- `.workflow/`, `.opencode/` — internal development automation/state.
+- `output/`, `tmp/`, `workspace/` — generated or scratch artifacts.
+- `database/` — internal persisted state used by development/verification. The
+  committed `database/knowledge.db` is a canonical backup for tests; it is not a
+  supported integration surface and its schema is internal.
+
+Public-facing integration docs are `README.md`, `docs/INTEGRATION.md`,
+`docs/OPEN_SOURCE_POLICY.md`, `docs/cli.md`, and the contract specs under `api/`.
 
 ---
 
