@@ -58,7 +58,6 @@ from knowledge_client import (  # noqa: E402
 from api.tools import ToolInterface  # noqa: E402  (public boundary, not SDK internals)
 from retrieval.repository import KnowledgeRepository  # noqa: E402  (test fixture only)
 
-PRODUCTION_DB = os.path.join(_ROOT, "database", "knowledge.db")
 FORBIDDEN_TOKENS = (
     "sqlite", "sql", "repository", "retrieval", "knowledge_api",
     "KnowledgeStore", "ai_engine", "schema",
@@ -180,102 +179,6 @@ class SdkAuditTests(unittest.TestCase):
     def test_client_rejects_non_transport(self):
         with self.assertRaises(TypeError):
             KnowledgeClient(42)
-
-
-class InProcessSdkTests(unittest.TestCase):
-    """The SDK client against the in-process public boundary on production."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls._interface = ToolInterface(db_path=PRODUCTION_DB)
-        cls.client = KnowledgeClient(InProcessTransport(interface=cls._interface))
-        cls.hash_before = _sha256(PRODUCTION_DB)
-
-    @classmethod
-    def tearDownClass(cls):
-        cls._interface.close()
-
-    def test_inspect_reports_real_counts(self):
-        result = self.client.inspect()
-        self.assertGreaterEqual(result["source_count"], 6)
-        self.assertGreaterEqual(result["node_count"], 4846)
-        self.assertGreaterEqual(result["relationship_count"], 55)
-        self.assertEqual(
-            sum(result["nodes_by_type"].values()), result["node_count"])
-        self.assertEqual(
-            sum(result["relationships_by_type"].values()),
-            result["relationship_count"])
-
-    def test_search_get_provenance_chain(self):
-        hits = self.client.search("exception", limit=3)
-        self.assertEqual(len(hits), 3)
-        for hit in hits:
-            self.assertIn("id", hit)
-        node = self.client.get(hits[0]["id"])
-        self.assertEqual(node["id"], hits[0]["id"])
-        prov = self.client.provenance(node["id"])
-        self.assertEqual(prov["node_id"], node["id"])
-        self.assertIn("source_name", prov)
-
-    def test_search_related(self):
-        hits = self.client.search("transport", node_type="entity", limit=20)
-        self.assertTrue(hits)
-        neighbours = self.client.related(hits[0]["id"])
-        self.assertIsInstance(neighbours, list)
-        for entry in neighbours:
-            self.assertIn("node", entry)
-            self.assertIn("via", entry)
-
-    def test_deterministic_results(self):
-        first = self.client.search("exception", limit=4)
-        second = self.client.search("exception", limit=4)
-        self.assertEqual(first, second)
-        node_id = first[0]["id"]
-        self.assertEqual(self.client.get(node_id), self.client.get(node_id))
-        self.assertEqual(self.client.inspect(), self.client.inspect())
-
-    def test_structured_error_mapping(self):
-        with self.assertRaises(NodeNotFoundError) as ctx:
-            self.client.get("id-that-does-not-exist")
-        self.assertEqual(ctx.exception.code, "node_not_found")
-        self.assertEqual(ctx.exception.node_id, "id-that-does-not-exist")
-
-        with self.assertRaises(UnknownOperationError) as ctx:
-            self.client.request("drop")
-        self.assertEqual(ctx.exception.code, "unknown_operation")
-
-        with self.assertRaises(InvalidArgumentError) as ctx:
-            self.client.search("x", limit=-5)
-        self.assertEqual(ctx.exception.code, "invalid_argument")
-
-        with self.assertRaises(InvalidRelationshipTypeError) as ctx:
-            self.client.follow("exceptions", relationship_type="is-a-kid-of")
-        self.assertEqual(ctx.exception.code, "invalid_relationship_type")
-
-    def test_errors_are_subclasses_of_knowledge_error(self):
-        for exc_instance in (
-                NodeNotFoundError("id-that-does-not-exist"),
-                InvalidArgumentError("boom"),
-                UnknownOperationError("drop"),
-                InvalidRequestError("bad"),
-                InvalidRelationshipTypeError("bad"),
-                InternalError("internal")):
-            self.assertIsInstance(exc_instance, KnowledgeError)
-            self.assertIsInstance(exc_instance, KnowledgeClientError)
-
-    def test_production_database_hash_unchanged(self):
-        self.assertEqual(_sha256(PRODUCTION_DB), self.hash_before)
-
-    def test_production_database_integrity_clean(self):
-        import sqlite3  # read-only verifier for the milestone report
-        conn = sqlite3.connect(PRODUCTION_DB)
-        try:
-            self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0],
-                             "ok")
-            self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(),
-                             [])
-        finally:
-            conn.close()
 
 
 class InProcessFixtureSdkTests(unittest.TestCase):
@@ -490,7 +393,11 @@ class SdkTransportFailureTests(unittest.TestCase):
             client.search("anything")
 
     def test_session_use_after_close_is_transport_error(self):
-        transport = SessionTransport()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db_path = os.path.join(tmp.name, "knowledge.db")
+        _seed_temp_db(db_path)
+        transport = SessionTransport(db=db_path)
         try:
             client = KnowledgeClient(transport)
             client.inspect()
@@ -535,36 +442,6 @@ class SdkTransportFailureTests(unittest.TestCase):
         client = KnowledgeClient(NoOutputTransport())
         with self.assertRaises(InvalidResponseError):
             client.inspect()
-
-
-class SdkProductionIsolationTests(unittest.TestCase):
-    """SDK activity must not alter the production database."""
-
-    HASH_BEFORE = None
-
-    @classmethod
-    def setUpClass(cls):
-        cls.HASH_BEFORE = _sha256(PRODUCTION_DB)
-
-    def test_production_session_read_only(self):
-        before = _sha256(PRODUCTION_DB)
-        transport = SessionTransport(wait_timeout=180)
-        client = KnowledgeClient(transport)
-        try:
-            result = client.inspect()
-            self.assertGreaterEqual(result["node_count"], 4846)
-            node = client.get("exceptions")
-            self.assertEqual(node["id"], "exceptions")
-        finally:
-            client.close()
-        stats = transport.session_stats()
-        self.assertIsNotNone(stats)
-        assert stats is not None
-        self.assertEqual(stats["initializations"], 1)
-        self.assertEqual(_sha256(PRODUCTION_DB), before)
-
-    def test_production_hash_still_unchanged(self):
-        self.assertEqual(_sha256(PRODUCTION_DB), self.HASH_BEFORE)
 
 
 if __name__ == "__main__":

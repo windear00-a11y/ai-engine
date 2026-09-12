@@ -14,23 +14,10 @@ import os
 import sys
 import tempfile
 import unittest
-import hashlib
-import sqlite3
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
-
-LEGACY_DB = os.path.join(_ROOT, "database", "knowledge.db")
-EXPECTED_KNOWLEDGE_SHA = "000d4fdeb00f09ccb0790330850d3f6f5d34a00b7719c31c8ff7649a503a9a91"
-
-def _sha256(p):
-    import hashlib
-    h = hashlib.sha256()
-    with open(p, "rb") as f:
-        for c in iter(lambda: f.read(1<<20), b""):
-            h.update(c)
-    return h.hexdigest()
 
 
 class KeywordRankerTests(unittest.TestCase):
@@ -214,10 +201,6 @@ class MemoryRecallRankerTests(unittest.TestCase):
         self.assertEqual(tuple(OPERATIONS), ("search", "get", "related", "follow", "provenance", "inspect"))
         self.assertEqual(list(HARD_WRITE_INVARIANTS), [("database/knowledge.db", "blocked"), ("database/knowledge.db.backup", "blocked")])
         self.assertEqual(intelligence.__version__, "0")
-        self.assertEqual(_sha256(LEGACY_DB), EXPECTED_KNOWLEDGE_SHA)
-        con = sqlite3.connect(f"file:{LEGACY_DB}?mode=ro", uri=True)
-        self.assertEqual(con.execute("PRAGMA integrity_check").fetchone()[0], "ok")
-        con.close()
         # No embeddings/LLM imported
         import sys
         for mod in list(sys.modules.keys()):

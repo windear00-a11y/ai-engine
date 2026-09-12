@@ -21,16 +21,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: assert frozen release commit (workflow_dispatch only)
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          actual="$(git rev-parse HEAD)"
-          expected="64f81c6e7ab8e4a2f615c5f116869b60e1529cc1"
-          echo "checked out HEAD: ${actual}"
-          if [ "${actual}" != "${expected}" ]; then
-            echo "::error::checked-out commit ${actual} != frozen release commit ${expected}"
-            exit 1
-          fi
       - name: build distributions
         run: |
           python -m pip install --upgrade pip
@@ -44,15 +34,11 @@ jobs:
           import tarfile
           import zipfile
 
-          event = os.environ["GITHUB_EVENT_NAME"]
           ref = os.environ["GITHUB_REF"]
-          if event == "workflow_dispatch":
-              expected_version = "0.10.0"
-          else:
-              prefix = "refs/tags/v"
-              if not ref.startswith(prefix):
-                  raise SystemExit(f"unexpected ref for tag trigger: {ref}")
-              expected_version = ref[len(prefix):]
+          prefix = "refs/tags/v"
+          if not ref.startswith(prefix):
+              raise SystemExit(f"unexpected ref for tag trigger: {ref}")
+          expected_version = ref[len(prefix):]
 
           whl = glob.glob("dist/*.whl")[0]
           sdist = glob.glob("dist/*.tar.gz")[0]
@@ -78,7 +64,7 @@ jobs:
               assert name == "kgheer-core", f"sdist name mismatch: {name}"
               assert version == expected_version, f"sdist version mismatch: {version} != {expected_version}"
 
-          print(f"verified: name=kgheer-core version={expected_version} ({event})")
+          print(f"verified: name=kgheer-core version={expected_version} (tag push)")
           PY
       - name: validate artifacts
         run: |

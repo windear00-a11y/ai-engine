@@ -31,8 +31,6 @@ from api.session import SessionServer
 from api.tools import ToolInterface
 from retrieval.repository import KnowledgeRepository
 
-PRODUCTION_DB = os.path.join(_ROOT, "database", "knowledge.db")
-
 
 def _sha256(path):
     h = hashlib.sha256()
@@ -473,23 +471,6 @@ class SessionProcessTests(unittest.TestCase):
             self.assertEqual(rc, 0)
         self.assertIn('"initializations": 1', err)
         self.assertIn('"requests": 2', err)
-
-    def test_production_session_read_only_and_loaded_once(self):
-        before = _sha256(PRODUCTION_DB)
-        proc = self._spawn(db=None)  # default production database
-        try:
-            result = self._ask(proc, {"operation": "inspect"})
-            self.assertTrue(result["ok"])
-            self.assertEqual(result["result"]["node_count"], 4846)
-            node = self._ask(proc, {"operation": "get",
-                                    "arguments": {"node_id": "exceptions"}})
-            self.assertTrue(node["ok"])
-            self.assertEqual(node["result"]["id"], "exceptions")
-        finally:
-            rc, err = self._shutdown(proc, timeout=120)
-            self.assertEqual(rc, 0)
-        self.assertIn('"initializations": 1', err)
-        self.assertEqual(_sha256(PRODUCTION_DB), before)
 
 
 if __name__ == "__main__":

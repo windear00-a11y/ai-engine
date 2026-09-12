@@ -35,7 +35,6 @@ from retrieval.repository import KnowledgeRepository
 # ---------------------------------------------------------------------------
 
 WEBAPP_PATH = os.path.join(_ROOT, "webapp", "index.html")
-PRODUCTION_DB = os.path.join(_ROOT, "database", "knowledge.db")
 
 
 def _read_webapp():
@@ -506,14 +505,18 @@ class WebAppHTTPIntegrationTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class WebAppDBSafetyTests(unittest.TestCase):
-    """The Web App never modifies the production database."""
+    """The Web App never modifies its database."""
 
     def setUp(self):
-        self.hash_before = _sha256(PRODUCTION_DB)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db_path = os.path.join(self.tmp.name, "knowledge.db")
+        _seed_db(self.db_path)
+        self.hash_before = _sha256(self.db_path)
 
     def test_webapp_file_not_modified_by_server(self):
-        """Starting the server does not modify the production DB."""
-        server = KnowledgeHTTPServer(("127.0.0.1", 0), db_path=PRODUCTION_DB)
+        """Starting the server does not modify the database."""
+        server = KnowledgeHTTPServer(("127.0.0.1", 0), db_path=self.db_path)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         port = server.server_address[1]
@@ -531,18 +534,18 @@ class WebAppDBSafetyTests(unittest.TestCase):
         finally:
             _close_server(server)
 
-        self.assertEqual(_sha256(PRODUCTION_DB), self.hash_before)
+        self.assertEqual(_sha256(self.db_path), self.hash_before)
 
     def test_integrity_check_ok(self):
         import sqlite3
-        conn = sqlite3.connect(PRODUCTION_DB)
+        conn = sqlite3.connect(self.db_path)
         result = conn.execute("PRAGMA integrity_check").fetchall()
         conn.close()
         self.assertEqual(result, [("ok",)])
 
     def test_foreign_key_check_empty(self):
         import sqlite3
-        conn = sqlite3.connect(PRODUCTION_DB)
+        conn = sqlite3.connect(self.db_path)
         result = conn.execute("PRAGMA foreign_key_check").fetchall()
         conn.close()
         self.assertEqual(result, [])

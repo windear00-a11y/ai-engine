@@ -425,34 +425,5 @@ class SearchSafetyTests(unittest.TestCase):
             tmp.cleanup()
 
 
-class ProductionDBTests(unittest.TestCase):
-    PROD = os.path.join(_ROOT, "database", "knowledge.db")
-
-    def test_production_inspect_reads_real_counts(self):
-        r = subprocess.run([sys.executable, "-m", "ai_engine", "inspect"],
-                           cwd=_ROOT, capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        data = json.loads(r.stdout)
-        self.assertGreaterEqual(data["source_count"], 6)
-        self.assertGreaterEqual(data["node_count"], 4846)
-        self.assertGreaterEqual(data["relationship_count"], 55)
-
-    def test_production_get_known_node(self):
-        r = subprocess.run([sys.executable, "-m", "ai_engine", "get",
-                            "exceptions"],
-                           cwd=_ROOT, capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        data = json.loads(r.stdout)
-        self.assertEqual(data["id"], "exceptions")
-        self.assertEqual(data["type"], "concept")
-
-    def test_production_read_does_not_mutate(self):
-        before = _sha256(self.PROD)
-        subprocess.run([sys.executable, "-m", "ai_engine", "search",
-                        "exception"], cwd=_ROOT, capture_output=True,
-                       text=True)
-        self.assertEqual(_sha256(self.PROD), before)
-
-
 if __name__ == "__main__":
     unittest.main()

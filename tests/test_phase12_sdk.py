@@ -29,8 +29,6 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-LEGACY_DB = os.path.join(_ROOT, "database", "knowledge.db")
-
 def _free_port():
     s = socket.socket()
     s.bind(("", 0))

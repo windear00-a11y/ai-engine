@@ -4,8 +4,8 @@ Covers: search (with type filter, limits, empty query), get, related, follow,
 provenance, inspect, missing-node errors, deterministic ordering, in-memory
 isolation, and the guarantee that read operations never mutate the database.
 
-Every test uses an isolated temporary or in-memory database -- the production
-``database/knowledge.db`` is only read by one explicit test.
+Every test uses an isolated temporary or in-memory database; no committed
+repository database is required.
 """
 
 import hashlib
@@ -23,7 +23,7 @@ from api import (
     RelationshipTypeError,
 )
 from retrieval.knowledge import KnowledgeStore
-from retrieval.repository import KnowledgeRepository, DEFAULT_KNOWLEDGE_DB
+from retrieval.repository import KnowledgeRepository
 
 
 def _seed(repo):
@@ -270,16 +270,6 @@ class ReadOnlyTests(unittest.TestCase):
             api.inspect()
             api.close()
             self.assertEqual(_sha256(db), before_hash)
-
-    def test_production_database_can_be_read(self):
-        api = KnowledgeAPI(db_path=DEFAULT_KNOWLEDGE_DB)
-        try:
-            info = api.inspect()
-            self.assertGreaterEqual(info["source_count"], 6)
-            self.assertGreaterEqual(info["node_count"], 4846)
-            self.assertGreaterEqual(info["relationship_count"], 55)
-        finally:
-            api.close()
 
 
 if __name__ == "__main__":

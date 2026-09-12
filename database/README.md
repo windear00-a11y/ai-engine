@@ -1,65 +1,43 @@
 # database/
 
-This directory holds the project's committed knowledge database:
+The `database/` directory is reserved for the legacy runtime knowledge-database
+path convention `<repo>/database/<db>` used by v1 tooling compatibility
+defaults.
 
-- `database/knowledge.db` is the **canonical backup** of the KGHEER Core
-  knowledge graph used by development and verification. It is intentionally
-  committed as content-bearing data; a SHA-256 integrity pin asserted by
-  `tests/test_knowledge_db_not_modified.py` guarantees it is never silently
-  changed.
-- It is a **repository-level artefact only**: the released `kgheer-core`
-  wheel and sdist do not contain `database/` or any `.db` file, so a fresh
-  installation never receives this database — or the CPython documentation
-  content it contains — as initial or default knowledge.
-- It is **not** a supported integration surface. External consumers interact
-  with the engine only through the public contract, SDK, CLI, or HTTP server
-  (see `docs/INTEGRATION.md`).
+## Status: no committed database
+
+A development knowledge database at `database/knowledge.db` was previously
+committed to this repository as a content-bearing artifact. It has been
+**removed** and **purged from git history**, and must not be re-added:
+
+- it is **not committed** and is **not present** in this directory;
+- it is **not** shipped in the `kgheer-core` wheel or sdist;
+- repository operation and tests do **not** require it; tests use isolated
+  temporary or in-memory databases.
+
+## Legacy runtime compatibility
+
+For backward compatibility, legacy v1 tooling still resolves the default
+knowledge database through `ai_engine.paths.get_legacy_db_path`, which points
+to `<repo>/database/<db_name>` (for example `database/knowledge.db`) when an
+explicit path is not supplied. This is a runtime path convention only — no file
+in `database/` is required for installation, tests, or normal operation.
 
 ## Relationship to runtime user data
 
-This file is deliberately **separate** from user runtime data. A fresh
-`kgheer-core` installation stores user knowledge under per-project databases
-created lazily on first use in the resolved data root:
+Runtime user data is separate from this directory. A fresh `kgheer-core`
+installation stores user knowledge under per-project databases created lazily
+on first use in the resolved data root:
 
 - `$AI_ENGINE_DATA_DIR`
 - → `$XDG_DATA_HOME/ai-engine`
 - → `~/.ai-engine`
 
 Each project owns its own databases (`knowledge.db`, `context.db`,
-`evidence.db`, …), which are entirely separate from this committed file. The
-SHA-256 pin above is a **repository/test integrity mechanism** for the
-committed artefact only; it is not a user-runtime storage requirement and
-never constrains per-project user data.
-
-## Known secret-scan false positives
-
-Almost all of the database's knowledge content was ingested from public
-CPython documentation (docs.python.org) library pages in a single earlier
-import during development. Because of that, a small number of nodes match
-secret-looking heuristics while containing **no real secrets**:
-
-- Nodes quoting the CPython `secrets` module recipe that builds a generated
-  password string — a documentation example of correct API usage, not a
-  credential.
-- Nodes quoting the CPython `configparser` documentation example whose sample
-  section is named "topsecret" — fictional example data, not a secret.
-- One node reproduces the CPython SSL documentation's **PEM placeholder** for
-  TLS private keys. Its text is placeholder prose (a format sketch of a
-  private-key header block) with **no key material**; it is an illustrative
-  string from `docs.python.org`, not a real private key. No credentials or key
-  material are present anywhere in the database.
+`evidence.db`, …) under `<data_root>/<project_id>/`; these are entirely
+separate from the legacy `<repo>/database` convention and never constrain it.
 
 ## Policy
 
-- **Do not rewrite or scrub the database** merely to silence these audit
-  false positives: the database is content-bearing and its integrity hash is
-  pinned. Deleting or rewriting nodes would corrupt the canonical content and
-  break the pin.
-- **This exemption does not generalize.** Only the verified documentation
-  placeholder described above is known-safe. Any other occurrence of a PEM
-  private-key header block — now or in future data — must be treated as a
-  real security concern until verified.
-- If a secret scanner is used in CI, these known strings may be **allowlisted
-  with narrowly scoped, path-specific rules** (limited to
-  `database/knowledge.db` and to the exact verified node content), not
-  globally suppressed.
+- **Do not re-add** any database under `database/`. `.gitignore` blocks
+  `database/*.db` for this reason.

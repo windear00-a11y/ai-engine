@@ -3,6 +3,9 @@
 Covers: staging creation, staging isolation, preview, approval boundary,
 conflict handling, provenance, atomic apply, rollback, idempotency,
 multi-domain imports, security, DB integrity, and Contract v1 compatibility.
+
+All tests run against an isolated, seeded knowledge database created in a
+temporary directory -- no committed repository database is required.
 """
 
 import hashlib
@@ -22,15 +25,8 @@ if _ROOT not in sys.path:
 from external_import.staging import create_staging, human_staging_summary
 from external_import.preview import preview, human_preview_summary
 from external_import.apply import apply, human_apply_summary
-from external_import.dry_run import (
-    dry_run,
-    _read_only_conn,
-    DEFAULT_KNOWLEDGE_DB,
-)
+from external_import.dry_run import dry_run
 from retrieval.repository import KnowledgeRepository
-
-KNOWLEDGE_DB = os.path.join(_ROOT, "database", "knowledge.db")
-PROD_HASH = "000d4fdeb00f09ccb0790330850d3f6f5d34a00b7719c31c8ff7649a503a9a91"
 
 
 # -- helpers ----------------------------------------------------------------
@@ -82,10 +78,29 @@ def _db_hash(path):
         return hashlib.sha256(f.read()).hexdigest()
 
 
+def _build_seed_db(path):
+    """Small, self-contained knowledge DB with a real technology node."""
+    repo = KnowledgeRepository(path)
+    repo.initialize()
+    sid = repo.add_source("seed", version="1.0")
+    repo.add_node(
+        "python", "technology", "Python",
+        "A high-level, interpreted, general-purpose programming language.",
+        source_id=sid,
+    )
+    repo.close()
+
+
 def _make_prod_copy(tmp):
-    """Create a writable copy of the production DB for testing."""
-    prod_copy = os.path.join(tmp, "knowledge.db")
-    shutil.copy2(KNOWLEDGE_DB, prod_copy)
+    """Return a writable, isolated copy of the seed knowledge DB."""
+    seed_dir = os.path.join(tmp, "seed")
+    os.makedirs(seed_dir, exist_ok=True)
+    seed_path = os.path.join(seed_dir, "knowledge.db")
+    _build_seed_db(seed_path)
+    prod_dir = os.path.join(tmp, "prod")
+    os.makedirs(prod_dir, exist_ok=True)
+    prod_copy = os.path.join(prod_dir, "knowledge.db")
+    shutil.copy2(seed_path, prod_copy)
     return prod_copy
 
 
@@ -126,22 +141,25 @@ class StagingCreationTests(unittest.TestCase):
     def test_staging_creates_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             staging_path = os.path.join(tmp, "staging.db")
+            prod_copy = _make_prod_copy(tmp)
             result = create_staging(_minimal_valid(), staging_path,
-                                    KNOWLEDGE_DB)
+                                    prod_copy)
             self.assertTrue(result.success)
             self.assertTrue(os.path.isfile(staging_path))
 
     def test_staging_contains_new_nodes(self):
         with tempfile.TemporaryDirectory() as tmp:
             staging_path = os.path.join(tmp, "staging.db")
+            prod_copy = _make_prod_copy(tmp)
             result = create_staging(_minimal_valid(), staging_path,
-                                    KNOWLEDGE_DB)
+                                    prod_copy)
             self.assertTrue(result.success)
             self.assertGreater(result.nodes_staged, 0)
 
     def test_staging_skips_existing_nodes(self):
         with tempfile.TemporaryDirectory() as tmp:
             staging_path = os.path.join(tmp, "staging.db")
+            prod_copy = _make_prod_copy(tmp)
             data = {
                 "source": _base_source(name="staging-skip-test"),
                 "nodes": [_node("python", ntype="technology", name="Python",
@@ -149,7 +167,7 @@ class StagingCreationTests(unittest.TestCase):
                                             "general-purpose programming language.")],
                 "relationships": [],
             }
-            result = create_staging(data, staging_path, KNOWLEDGE_DB)
+            result = create_staging(data, staging_path, prod_copy)
             self.assertTrue(result.success)
             self.assertEqual(result.nodes_staged, 0)
             self.assertGreater(result.nodes_skipped, 0)
@@ -157,13 +175,14 @@ class StagingCreationTests(unittest.TestCase):
     def test_staging_detects_content_conflict(self):
         with tempfile.TemporaryDirectory() as tmp:
             staging_path = os.path.join(tmp, "staging.db")
+            prod_copy = _make_prod_copy(tmp)
             data = {
                 "source": _base_source(name="staging-conflict-test"),
                 "nodes": [_node("python", name="Python MODIFIED",
                                 description="TAMPERED")],
                 "relationships": [],
             }
-            result = create_staging(data, staging_path, KNOWLEDGE_DB)
+            result = create_staging(data, staging_path, prod_copy)
             self.assertTrue(result.success)
             self.assertEqual(result.nodes_staged, 0)
             self.assertGreater(result.nodes_conflicting, 0)
@@ -173,8 +192,9 @@ class StagingCreationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             staging_path1 = os.path.join(tmp, "s1.db")
             staging_path2 = os.path.join(tmp, "s2.db")
-            r1 = create_staging(_minimal_valid(), staging_path1, KNOWLEDGE_DB)
-            r2 = create_staging(_minimal_valid(), staging_path2, KNOWLEDGE_DB)
+            prod_copy = _make_prod_copy(tmp)
+            r1 = create_staging(_minimal_valid(), staging_path1, prod_copy)
+            r2 = create_staging(_minimal_valid(), staging_path2, prod_copy)
             d1 = {k: v for k, v in r1.as_dict().items()
                   if k != "staging_path"}
             d2 = {k: v for k, v in r2.as_dict().items()
@@ -184,8 +204,9 @@ class StagingCreationTests(unittest.TestCase):
     def test_staging_source_created(self):
         with tempfile.TemporaryDirectory() as tmp:
             staging_path = os.path.join(tmp, "staging.db")
+            prod_copy = _make_prod_copy(tmp)
             result = create_staging(_minimal_valid(), staging_path,
-                                    KNOWLEDGE_DB)
+                                    prod_copy)
             self.assertTrue(result.source_created)
 
     def test_staging_graceful_missing_prod_db(self):
@@ -202,20 +223,22 @@ class StagingCreationTests(unittest.TestCase):
 
 class StagingIsolationTests(unittest.TestCase):
     def test_staging_does_not_modify_production(self):
-        before = _db_hash(KNOWLEDGE_DB)
         with tempfile.TemporaryDirectory() as tmp:
+            prod_copy = _make_prod_copy(tmp)
+            before = _db_hash(prod_copy)
             staging_path = os.path.join(tmp, "staging.db")
-            create_staging(_minimal_valid(), staging_path, KNOWLEDGE_DB)
-        after = _db_hash(KNOWLEDGE_DB)
-        self.assertEqual(before, after)
+            create_staging(_minimal_valid(), staging_path, prod_copy)
+            after = _db_hash(prod_copy)
+            self.assertEqual(before, after)
 
     def test_staging_db_is_separate_file(self):
         with tempfile.TemporaryDirectory() as tmp:
+            prod_copy = _make_prod_copy(tmp)
             staging_path = os.path.join(tmp, "staging.db")
-            create_staging(_minimal_valid(), staging_path, KNOWLEDGE_DB)
+            create_staging(_minimal_valid(), staging_path, prod_copy)
             self.assertTrue(os.path.isfile(staging_path))
             self.assertNotEqual(os.path.abspath(staging_path),
-                                os.path.abspath(KNOWLEDGE_DB))
+                                os.path.abspath(prod_copy))
 
 
 # -- preview -----------------------------------------------------------------
@@ -224,8 +247,9 @@ class PreviewTests(unittest.TestCase):
     def test_preview_reads_staging(self):
         with tempfile.TemporaryDirectory() as tmp:
             staging_path = os.path.join(tmp, "staging.db")
-            create_staging(_minimal_valid(), staging_path, KNOWLEDGE_DB)
-            report = preview(staging_path, KNOWLEDGE_DB)
+            prod_copy = _make_prod_copy(tmp)
+            create_staging(_minimal_valid(), staging_path, prod_copy)
+            report = preview(staging_path, prod_copy)
             self.assertTrue(report.safe)
             self.assertTrue(report.staging_valid)
             self.assertTrue(report.production_available)
@@ -234,30 +258,35 @@ class PreviewTests(unittest.TestCase):
     def test_preview_deterministic(self):
         with tempfile.TemporaryDirectory() as tmp:
             staging_path = os.path.join(tmp, "staging.db")
-            create_staging(_minimal_valid(), staging_path, KNOWLEDGE_DB)
-            r1 = preview(staging_path, KNOWLEDGE_DB)
-            r2 = preview(staging_path, KNOWLEDGE_DB)
+            prod_copy = _make_prod_copy(tmp)
+            create_staging(_minimal_valid(), staging_path, prod_copy)
+            r1 = preview(staging_path, prod_copy)
+            r2 = preview(staging_path, prod_copy)
             self.assertEqual(r1.as_dict(), r2.as_dict())
 
     def test_preview_shows_projected_counts(self):
         with tempfile.TemporaryDirectory() as tmp:
             staging_path = os.path.join(tmp, "staging.db")
-            create_staging(_minimal_valid(), staging_path, KNOWLEDGE_DB)
-            report = preview(staging_path, KNOWLEDGE_DB)
+            prod_copy = _make_prod_copy(tmp)
+            create_staging(_minimal_valid(), staging_path, prod_copy)
+            report = preview(staging_path, prod_copy)
             self.assertEqual(
                 report.projected_node_count,
                 report.production_node_count + report.new_nodes)
 
     def test_preview_missing_staging(self):
-        report = preview("/nonexistent/staging.db", KNOWLEDGE_DB)
-        self.assertFalse(report.safe)
-        self.assertTrue(any(e["code"] == "staging_not_found"
-                            for e in report.errors))
+        with tempfile.TemporaryDirectory() as tmp:
+            prod_copy = _make_prod_copy(tmp)
+            report = preview("/nonexistent/staging.db", prod_copy)
+            self.assertFalse(report.safe)
+            self.assertTrue(any(e["code"] == "staging_not_found"
+                                for e in report.errors))
 
     def test_preview_graceful_missing_prod(self):
         with tempfile.TemporaryDirectory() as tmp:
             staging_path = os.path.join(tmp, "staging.db")
-            create_staging(_minimal_valid(), staging_path, KNOWLEDGE_DB)
+            prod_copy = _make_prod_copy(tmp)
+            create_staging(_minimal_valid(), staging_path, prod_copy)
             report = preview(staging_path, "/nonexistent/knowledge.db")
             self.assertTrue(report.staging_valid)
             self.assertFalse(report.production_available)
@@ -267,8 +296,9 @@ class PreviewTests(unittest.TestCase):
     def test_preview_human_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
             staging_path = os.path.join(tmp, "staging.db")
-            create_staging(_minimal_valid(), staging_path, KNOWLEDGE_DB)
-            report = preview(staging_path, KNOWLEDGE_DB)
+            prod_copy = _make_prod_copy(tmp)
+            create_staging(_minimal_valid(), staging_path, prod_copy)
+            report = preview(staging_path, prod_copy)
             summary = human_preview_summary(report)
             self.assertIn("External import preview", summary)
             self.assertIn("SAFE TO APPLY", summary)
@@ -482,23 +512,25 @@ class RollbackTests(unittest.TestCase):
             self.assertTrue(result2.committed)
 
     def test_production_db_unchanged_during_staging(self):
-        before = _db_hash(KNOWLEDGE_DB)
         with tempfile.TemporaryDirectory() as tmp:
+            prod_copy = _make_prod_copy(tmp)
+            before = _db_hash(prod_copy)
             staging_path = os.path.join(tmp, "staging.db")
-            create_staging(_minimal_valid(), staging_path, KNOWLEDGE_DB)
-        after = _db_hash(KNOWLEDGE_DB)
-        self.assertEqual(before, after)
+            create_staging(_minimal_valid(), staging_path, prod_copy)
+            after = _db_hash(prod_copy)
+            self.assertEqual(before, after)
 
     def test_staging_and_dry_run_agree(self):
         with tempfile.TemporaryDirectory() as tmp:
+            prod_copy = _make_prod_copy(tmp)
             staging_path = os.path.join(tmp, "staging.db")
             data = {
                 "source": _base_source(name="agree-test"),
                 "nodes": [_node("agree-node", name="Agree Node")],
                 "relationships": [],
             }
-            staging_result = create_staging(data, staging_path, KNOWLEDGE_DB)
-            dry = dry_run(data, db_path=KNOWLEDGE_DB)
+            staging_result = create_staging(data, staging_path, prod_copy)
+            dry = dry_run(data, db_path=prod_copy)
             self.assertEqual(staging_result.nodes_staged, dry.new_nodes)
             self.assertEqual(staging_result.nodes_skipped, dry.existing_nodes)
 
@@ -516,6 +548,9 @@ class IdempotencyTests(unittest.TestCase):
                 "relationships": [_rel("idem-node-1", "related_to",
                                        "idem-node-2")],
             }
+            orig_count = sqlite3.connect(
+                f"file:{prod_copy}?mode=ro", uri=True
+            ).execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
 
             # First apply
             staging1 = os.path.join(tmp, "s1.db")
@@ -537,9 +572,6 @@ class IdempotencyTests(unittest.TestCase):
             try:
                 count = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
                 # Should be original + 2 (not 4)
-                orig_count = sqlite3.connect(
-                    f"file:{KNOWLEDGE_DB}?mode=ro", uri=True
-                ).execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
                 self.assertEqual(count, orig_count + 2)
             finally:
                 conn.close()
@@ -554,6 +586,9 @@ class IdempotencyTests(unittest.TestCase):
                 "relationships": [_rel("ire-node-a", "related_to",
                                        "ire-node-b")],
             }
+            orig = sqlite3.connect(
+                f"file:{prod_copy}?mode=ro", uri=True
+            ).execute("SELECT COUNT(*) FROM relationships").fetchone()[0]
 
             staging1 = os.path.join(tmp, "s1.db")
             create_staging(data, staging1, prod_copy)
@@ -569,9 +604,6 @@ class IdempotencyTests(unittest.TestCase):
             try:
                 count = conn.execute(
                     "SELECT COUNT(*) FROM relationships").fetchone()[0]
-                orig = sqlite3.connect(
-                    f"file:{KNOWLEDGE_DB}?mode=ro", uri=True
-                ).execute("SELECT COUNT(*) FROM relationships").fetchone()[0]
                 self.assertEqual(count, orig + 1)
             finally:
                 conn.close()
@@ -647,26 +679,30 @@ class SecurityTests(unittest.TestCase):
     def test_staging_rejects_invalid_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             staging_path = os.path.join(tmp, "staging.db")
+            prod_copy = _make_prod_copy(tmp)
             result = create_staging({"source": "bad"}, staging_path,
-                                    KNOWLEDGE_DB)
+                                    prod_copy)
             self.assertFalse(result.success)
             self.assertTrue(len(result.errors) > 0)
 
     def test_apply_rejects_missing_staging(self):
-        result = apply("/nonexistent/staging.db", KNOWLEDGE_DB)
-        self.assertFalse(result.committed)
-        self.assertTrue(len(result.errors) > 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            prod_copy = _make_prod_copy(tmp)
+            result = apply("/nonexistent/staging.db", prod_copy)
+            self.assertFalse(result.committed)
+            self.assertTrue(len(result.errors) > 0)
 
     def test_staging_no_sql_execution(self):
         with tempfile.TemporaryDirectory() as tmp:
             staging_path = os.path.join(tmp, "staging.db")
+            prod_copy = _make_prod_copy(tmp)
             data = {
                 "source": _base_source(name="sql-test"),
                 "nodes": [_node("'; DROP TABLE nodes; --",
                                 name="SQL Injection")],
                 "relationships": [],
             }
-            result = create_staging(data, staging_path, KNOWLEDGE_DB)
+            result = create_staging(data, staging_path, prod_copy)
             # The malicious ID is treated as a normal string — no SQL execution
             self.assertTrue(result.success)
             self.assertEqual(result.nodes_staged, 1)
@@ -674,12 +710,13 @@ class SecurityTests(unittest.TestCase):
     def test_staging_no_arbitrary_path_write(self):
         with tempfile.TemporaryDirectory() as tmp:
             staging_path = os.path.join(tmp, "staging.db")
+            prod_copy = _make_prod_copy(tmp)
             data = _minimal_valid()
-            result = create_staging(data, staging_path, KNOWLEDGE_DB)
+            result = create_staging(data, staging_path, prod_copy)
             self.assertTrue(result.success)
             # Staging DB was created at the specified path only
             self.assertTrue(os.path.isfile(staging_path))
-            # No other DB files were created
+            # No other DB files were created in this directory
             db_files = [f for f in os.listdir(tmp) if f.endswith(".db")]
             self.assertEqual(len(db_files), 1)
 
@@ -874,54 +911,6 @@ class CLIStageTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0)
             out = self._parse_json(r.stdout)
             self.assertTrue(out["committed"])
-
-
-# -- production DB constants -------------------------------------------------
-
-class ProductionDBConstantsTests(unittest.TestCase):
-    def test_node_count(self):
-        conn = _read_only_conn(KNOWLEDGE_DB)
-        try:
-            count = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
-            self.assertEqual(count, 4846)
-        finally:
-            conn.close()
-
-    def test_relationship_count(self):
-        conn = _read_only_conn(KNOWLEDGE_DB)
-        try:
-            count = conn.execute(
-                "SELECT COUNT(*) FROM relationships").fetchone()[0]
-            self.assertEqual(count, 1338)
-        finally:
-            conn.close()
-
-    def test_source_count(self):
-        conn = _read_only_conn(KNOWLEDGE_DB)
-        try:
-            count = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
-            self.assertEqual(count, 6)
-        finally:
-            conn.close()
-
-    def test_integrity_check(self):
-        conn = _read_only_conn(KNOWLEDGE_DB)
-        try:
-            result = conn.execute("PRAGMA integrity_check").fetchone()[0]
-            self.assertEqual(result, "ok")
-        finally:
-            conn.close()
-
-    def test_foreign_key_check(self):
-        conn = _read_only_conn(KNOWLEDGE_DB)
-        try:
-            result = conn.execute("PRAGMA foreign_key_check").fetchall()
-            self.assertEqual(result, [])
-        finally:
-            conn.close()
-
-    def test_hash_unchanged(self):
-        self.assertEqual(_db_hash(KNOWLEDGE_DB), PROD_HASH)
 
 
 if __name__ == "__main__":

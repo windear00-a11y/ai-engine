@@ -59,8 +59,9 @@ before getting started.
   `knowledge_client` HTTP integration.
 - Tests must be deterministic; avoid network access and machine-specific paths
   in tests.
-- If a test depends on the committed `database/knowledge.db`, it must not
-  modify that database. Keep test state isolated in `tmp`.
+- Tests never depend on a committed repository database (the old
+  `database/knowledge.db` was removed and purged from history). Use isolated
+  temporary or in-memory databases and keep test state isolated in `tmp`.
 
 ## Contribution standards
 

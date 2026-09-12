@@ -113,8 +113,8 @@ and may change or disappear without notice:
 - `benchmarks/` — internal performance harnesses.
 - `.workflow/`, `.opencode/` — internal development automation/state.
 - `output/`, `tmp/`, `workspace/` — generated or scratch artifacts.
-- `database/` — internal persisted state used by development/verification. The
-  committed `database/knowledge.db` is a canonical backup for tests; it is not a
+- `database/` — reserved legacy runtime path for the knowledge database
+  (`<repo>/database/knowledge.db`); no committed database is shipped. It is not a
   supported integration surface and its schema is internal.
 
 Public-facing integration docs are `README.md`, `docs/INTEGRATION.md`,

@@ -62,17 +62,6 @@ SHARED_ERROR_CODES = {
     "node_not_found",
     "internal_error",
 }
-LEGACY_DB = os.path.join(_ROOT, "database", "knowledge.db")
-EXPECTED_SHA = "000d4fdeb00f09ccb0790330850d3f6f5d34a00b7719c31c8ff7649a503a9a91"
-
-
-def _sha256(p):
-    import hashlib
-    h = hashlib.sha256()
-    with open(p, "rb") as f:
-        for c in iter(lambda: f.read(1 << 20), b""):
-            h.update(c)
-    return h.hexdigest()
 
 
 def _free_port():
@@ -97,11 +86,6 @@ def _run_cli(args, data_root=None):
 # --------------------------------------------------------------------------
 
 class TestV1Immutability(unittest.TestCase):
-    def test_legacy_db_sha_unchanged(self):
-        if not os.path.exists(LEGACY_DB):
-            self.skipTest("legacy database absent")
-        self.assertEqual(_sha256(LEGACY_DB), EXPECTED_SHA)
-
     def test_v1_operation_set_frozen(self):
         self.assertEqual(contract_v1.CONTRACT_VERSION, "1")
         self.assertEqual(set(contract_v1.OPERATIONS), EXPECTED_V1_OPS)

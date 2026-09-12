@@ -553,9 +553,10 @@ class ProductionDBSafetyTests(unittest.TestCase):
     """Production database is never touched by v0.9 changes."""
 
     def setUp(self):
-        self.db_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "database", "knowledge.db")
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db_path = os.path.join(self.tmp.name, "knowledge.db")
+        _seed_db(self.db_path)
         self.hash_before = _sha256(self.db_path)
 
     def test_db_hash_unchanged_after_v09_server(self):

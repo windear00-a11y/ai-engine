@@ -15,9 +15,9 @@ JSON request from stdin).
 Isolation guarantees enforced here
 ----------------------------------
 * static audit: ``client.py`` imports only stdlib modules;
-* the client never touches ``database/knowledge.db`` itself -- integrity and
-  the byte hash of the production database are verified unchanged around all
-  of its activity;
+* the client never touches the legacy ``database/knowledge.db`` runtime path --
+  data integrity is verified unchanged around all of its activity against an
+  isolated temporary database (no committed repository database exists);
 * every operation is exercised through the approved six-operation contract.
 """
 
@@ -53,7 +53,6 @@ from retrieval.repository import (
     KnowledgeRepository,  # fixture-builder only; never used by client.py
 )
 
-PRODUCTION_DB = os.path.join(_ROOT, "database", "knowledge.db")
 FORBIDDEN_TOKENS = (
     "sqlite", "sql", "repository", "retrieval", "knowledge_api",
     "KnowledgeStore", "ai_engine", "schema",
@@ -136,31 +135,36 @@ class ContractAuditTests(unittest.TestCase):
 
 
 class InProcessIntegrationTests(unittest.TestCase):
-    """The client against the in-process public ToolInterface on production."""
+    """The client against the in-process public ToolInterface on an isolated
+    runtime database (no committed repository database is required)."""
 
     @classmethod
     def setUpClass(cls):
-        cls._interface = ToolInterface(db_path=PRODUCTION_DB)
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls._db = os.path.join(cls._tmp.name, "knowledge.db")
+        _seed_temp_db(cls._db)
+        cls._interface = ToolInterface(db_path=cls._db)
         cls.engine = KnowledgeClient(cls._interface.execute)
-        cls.hash_before = _sha256(PRODUCTION_DB)
+        cls.hash_before = _sha256(cls._db)
 
     @classmethod
     def tearDownClass(cls):
         cls._interface.close()
+        cls._tmp.cleanup()
 
-    def test_inspect_reports_real_counts(self):
+    def test_inspect_reports_fixture_counts(self):
         result = self.engine.inspect()
-        self.assertGreaterEqual(result["source_count"], 6)
-        self.assertGreaterEqual(result["node_count"], 4846)
-        self.assertGreaterEqual(result["relationship_count"], 55)
+        self.assertEqual(result["source_count"], 1)
+        self.assertEqual(result["node_count"], 5)
+        self.assertEqual(result["relationship_count"], 3)
         by_type = result["nodes_by_type"]
         self.assertEqual(sum(by_type.values()), result["node_count"])
         by_rel = result["relationships_by_type"]
         self.assertEqual(sum(by_rel.values()), result["relationship_count"])
 
     def test_search_get_chain(self):
-        hits = self.engine.search("exception", limit=3)
-        self.assertEqual(len(hits), 3)
+        hits = self.engine.search("ReadTransport", limit=3)
+        self.assertTrue(hits)
         for hit in hits:
             self.assertIn("id", hit)
             self.assertIn("type", hit)
@@ -171,18 +175,18 @@ class InProcessIntegrationTests(unittest.TestCase):
         self.assertEqual(node["name"], hits[0]["name"])
 
     def test_get_provenance_chain(self):
-        node = self.engine.get("exceptions")
-        self.assertEqual(node["id"], "exceptions")
-        prov = self.engine.provenance("exceptions")
-        self.assertEqual(prov["node_id"], "exceptions")
+        node = self.engine.get("transport")
+        self.assertEqual(node["id"], "transport")
+        prov = self.engine.provenance("transport")
+        self.assertEqual(prov["node_id"], "transport")
         self.assertIsInstance(prov["source_id"], int)
         self.assertTrue(prov["source_name"])
         self.assertIn("imported_at", prov)
 
     def test_related_returns_neighbours(self):
-        node = self.engine.get("exceptions")
-        self.assertEqual(node["id"], "exceptions")
-        neighbours = self.engine.related("exceptions")
+        node = self.engine.get("transport")
+        self.assertEqual(node["id"], "transport")
+        neighbours = self.engine.related("transport")
         self.assertGreaterEqual(len(neighbours), 1)
         for entry in neighbours:
             self.assertIn("node", entry)
@@ -192,10 +196,9 @@ class InProcessIntegrationTests(unittest.TestCase):
                 self.assertIn("direction", via)
                 self.assertIn("relationship_type", via)
 
-    def test_real_relationship_traversal(self):
-        """Dynamically discover production relationships and traverse them."""
+    def test_fixture_relationship_traversal(self):
+        """Traverse the seeded fixture relationships end to end."""
         rel_by_type = self.engine.inspect()["relationships_by_type"]
-        self.assertTrue(rel_by_type)
         reltype, count = max(rel_by_type.items(), key=lambda kv: kv[1])
         self.assertGreaterEqual(count, 1)
 
@@ -231,8 +234,8 @@ class InProcessIntegrationTests(unittest.TestCase):
         self.assertNotEqual(neighbour["id"], source_id)
 
     def test_deterministic_results(self):
-        first = self.engine.search("exception", limit=4)
-        second = self.engine.search("exception", limit=4)
+        first = self.engine.search("transport", limit=4)
+        second = self.engine.search("transport", limit=4)
         self.assertEqual(first, second)
         node_id = first[0]["id"]
         self.assertEqual(self.engine.get(node_id), self.engine.get(node_id))
@@ -262,12 +265,12 @@ class InProcessIntegrationTests(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "invalid_request")
 
-    def test_production_database_hash_unchanged(self):
-        self.assertEqual(_sha256(PRODUCTION_DB), self.hash_before)
+    def test_runtime_database_hash_unchanged(self):
+        self.assertEqual(_sha256(self._db), self.hash_before)
 
-    def test_production_database_integrity_clean(self):
+    def test_runtime_database_integrity_clean(self):
         import sqlite3  # read-only verifier for the milestone report
-        conn = sqlite3.connect(PRODUCTION_DB)
+        conn = sqlite3.connect(self._db)
         try:
             self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0],
                              "ok")
@@ -369,14 +372,6 @@ class ProcessBoundaryTests(unittest.TestCase):
         self.engine.follow("transport", relationship_type="extends")
         self.assertEqual(_sha256(self.db), self.hash_before)
 
-    def test_production_inspect_via_own_process(self):
-        """One production request through an entirely separate interpreter."""
-        prod = KnowledgeClient(SubprocessTransport())
-        before = _sha256(PRODUCTION_DB)
-        result = prod.inspect()
-        self.assertGreaterEqual(result["node_count"], 4846)
-        self.assertEqual(_sha256(PRODUCTION_DB), before)
-
 
 class SessionIntegrationTests(unittest.TestCase):
     """The independent client against the persistent session process.
@@ -449,22 +444,6 @@ class SessionIntegrationTests(unittest.TestCase):
         self.engine._send.close()  # EOF on stdin
         detail = self.engine._send.session_stats()
         self.assertIsNotNone(detail)
-
-    def test_production_session_read_only(self):
-        before = _sha256(PRODUCTION_DB)
-        prod = KnowledgeClient(SessionTransport(wait_timeout=180))
-        try:
-            result = prod.inspect()
-            self.assertEqual(result["node_count"], 4846)
-            node = prod.get("exceptions")
-            self.assertEqual(node["id"], "exceptions")
-        finally:
-            prod._send.close()
-        stats = prod._send.session_stats()
-        self.assertIsNotNone(stats)
-        assert stats is not None
-        self.assertEqual(stats["initializations"], 1)
-        self.assertEqual(_sha256(PRODUCTION_DB), before)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,10 @@
 Covers: JSON structure, source validation, node validation, relationship
 validation, referential integrity, duplicate detection, self-references,
 dry-run conflict detection, determinism, isolation, CLI, multi-domain
-fixtures, and production DB safety.
+fixtures, and read-only safety.
+
+All dry-run tests run against an isolated, seeded database created in a
+temporary directory -- no committed repository database is required.
 """
 
 import hashlib
@@ -27,12 +30,8 @@ from external_import.dry_run import (
     dry_run,
     _content_hash,
     _read_only_conn,
-    DEFAULT_KNOWLEDGE_DB,
 )
 from retrieval.repository import KnowledgeRepository
-
-
-KNOWLEDGE_DB = os.path.join(_ROOT, "database", "knowledge.db")
 
 
 # -- helpers ----------------------------------------------------------------
@@ -79,8 +78,29 @@ def _write_json(tmp, name, obj):
     return path
 
 
-def _db_hash():
-    with open(KNOWLEDGE_DB, "rb") as f:
+def _build_seed_db(path):
+    """Small, self-contained DB with the python/react/javascript fixtures the
+    dry-run classification tests rely on."""
+    repo = KnowledgeRepository(path)
+    repo.initialize()
+    sid = repo.add_source("python-core", version="1.0")
+    repo.add_node(
+        "python", "technology", "Python",
+        "A high-level, interpreted, general-purpose programming language.",
+        source_id=sid,
+    )
+    repo.add_node(
+        "react", "technology", "React",
+        "A JavaScript library for building user interfaces.", source_id=sid)
+    repo.add_node(
+        "javascript", "technology", "JavaScript",
+        "A high-level, interpreted programming language.", source_id=sid)
+    repo.add_relationship("react", "related_to", "javascript", "seed")
+    repo.close()
+
+
+def _db_hash(path):
+    with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 
 
@@ -393,9 +413,17 @@ class ContentHashTests(unittest.TestCase):
 # -- dry-run: basic --------------------------------------------------------
 
 class DryRunBasicTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "knowledge.db")
+        _build_seed_db(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
     def test_valid_data_no_conflicts(self):
         data = _minimal_valid()
-        report = dry_run(data)
+        report = dry_run(data, db_path=self.db)
         self.assertTrue(report.safe)
         self.assertTrue(report.validated)
         self.assertTrue(report.db_opened)
@@ -404,7 +432,7 @@ class DryRunBasicTests(unittest.TestCase):
 
     def test_invalid_data_not_safe(self):
         data = {"source": "bad", "nodes": []}
-        report = dry_run(data)
+        report = dry_run(data, db_path=self.db)
         self.assertFalse(report.safe)
         self.assertFalse(report.validated)
 
@@ -414,27 +442,35 @@ class DryRunBasicTests(unittest.TestCase):
 
     def test_report_is_deterministic(self):
         data = _minimal_valid()
-        r1 = dry_run(data)
-        r2 = dry_run(data)
+        r1 = dry_run(data, db_path=self.db)
+        r2 = dry_run(data, db_path=self.db)
         self.assertEqual(r1.as_dict(), r2.as_dict())
 
     def test_report_json_is_deterministic(self):
         data = _minimal_valid()
-        r1 = dry_run(data)
-        r2 = dry_run(data)
+        r1 = dry_run(data, db_path=self.db)
+        r2 = dry_run(data, db_path=self.db)
         self.assertEqual(r1.as_json(), r2.as_json())
 
 
 # -- dry-run: production DB conflicts --------------------------------------
 
 class DryRunConflictTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "knowledge.db")
+        _build_seed_db(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
     def test_existing_node_detected(self):
         data = {
             "source": _base_source(name="conflict-test"),
             "nodes": [_node("python", name="Python", description="A language")],
             "relationships": [],
         }
-        report = dry_run(data)
+        report = dry_run(data, db_path=self.db)
         self.assertTrue(report.db_opened)
         self.assertGreater(report.existing_nodes, 0)
         self.assertEqual(report.existing_nodes, 1)
@@ -446,7 +482,7 @@ class DryRunConflictTests(unittest.TestCase):
                             name="Unique Node")],
             "relationships": [],
         }
-        report = dry_run(data)
+        report = dry_run(data, db_path=self.db)
         self.assertEqual(report.new_nodes, 1)
 
     def test_content_match_detected(self):
@@ -458,7 +494,7 @@ class DryRunConflictTests(unittest.TestCase):
                                         "general-purpose programming language.")],
             "relationships": [],
         }
-        report = dry_run(data)
+        report = dry_run(data, db_path=self.db)
         self.assertGreater(report.content_match, 0)
 
     def test_content_mismatch_detected(self):
@@ -468,7 +504,7 @@ class DryRunConflictTests(unittest.TestCase):
                             description="A different description.")],
             "relationships": [],
         }
-        report = dry_run(data)
+        report = dry_run(data, db_path=self.db)
         self.assertGreater(report.content_mismatch, 0)
         self.assertIn("python", report.conflicting_nodes)
         self.assertFalse(report.safe)
@@ -482,7 +518,7 @@ class DryRunConflictTests(unittest.TestCase):
             ],
             "relationships": [],
         }
-        report = dry_run(data)
+        report = dry_run(data, db_path=self.db)
         self.assertGreater(report.existing_nodes, 0)
         self.assertGreater(report.new_nodes, 0)
 
@@ -496,7 +532,7 @@ class DryRunConflictTests(unittest.TestCase):
                 _rel("react", "related_to", "javascript"),
             ],
         }
-        report = dry_run(data)
+        report = dry_run(data, db_path=self.db)
         self.assertGreater(report.existing_relationships, 0)
 
     def test_new_relationship_detected(self):
@@ -508,7 +544,7 @@ class DryRunConflictTests(unittest.TestCase):
                 _rel("react", "custom_rel", "python"),
             ],
         }
-        report = dry_run(data)
+        report = dry_run(data, db_path=self.db)
         self.assertGreater(report.new_relationships, 0)
 
     def test_source_name_exists(self):
@@ -518,7 +554,7 @@ class DryRunConflictTests(unittest.TestCase):
             "nodes": [_node("a", name="A")],
             "relationships": [],
         }
-        report = dry_run(data)
+        report = dry_run(data, db_path=self.db)
         self.assertTrue(report.existing_source)
         self.assertFalse(report.new_source)
 
@@ -526,20 +562,30 @@ class DryRunConflictTests(unittest.TestCase):
 # -- dry-run: isolation / safety -------------------------------------------
 
 class DryRunSafetyTests(unittest.TestCase):
-    def test_production_db_hash_unchanged(self):
-        before = _db_hash()
+    """Dry-run never mutates the isolated seeded database and only reads it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "knowledge.db")
+        _build_seed_db(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_runtime_db_hash_unchanged(self):
+        before = _db_hash(self.db)
         data = {
             "source": _base_source(name="safety-test"),
             "nodes": [_node("python", name="Python MODIFIED",
                             description="TAMPERED")],
             "relationships": [],
         }
-        dry_run(data)
-        after = _db_hash()
+        dry_run(data, db_path=self.db)
+        after = _db_hash(self.db)
         self.assertEqual(before, after)
 
     def test_read_only_conn_rejects_writes(self):
-        conn = _read_only_conn(KNOWLEDGE_DB)
+        conn = _read_only_conn(self.db)
         try:
             with self.assertRaises(sqlite3.OperationalError):
                 conn.execute("INSERT INTO nodes (id, type, name, description) "
@@ -551,22 +597,30 @@ class DryRunSafetyTests(unittest.TestCase):
 # -- dry-run: determinism --------------------------------------------------
 
 class DryRunDeterminismTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "knowledge.db")
+        _build_seed_db(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
     def test_repeated_runs_identical(self):
         data = _minimal_valid()
-        reports = [dry_run(data) for _ in range(5)]
+        reports = [dry_run(data, db_path=self.db) for _ in range(5)]
         dicts = [r.as_dict() for r in reports]
         self.assertTrue(all(d == dicts[0] for d in dicts))
 
     def test_no_timestamps_in_report(self):
         data = _minimal_valid()
-        report = dry_run(data)
+        report = dry_run(data, db_path=self.db)
         report_json = report.as_json()
         self.assertNotIn("T", report_json.split('"source_name"')[0]
                          if '"source_name"' in report_json else report_json)
 
     def test_sorted_output(self):
         data = _minimal_valid()
-        report = dry_run(data)
+        report = dry_run(data, db_path=self.db)
         d = report.as_dict()
         self.assertEqual(d["errors"], sorted(d["errors"],
                                              key=lambda e: (e.get("code", ""),
@@ -593,6 +647,14 @@ class DryRunDBUnavailableTests(unittest.TestCase):
 
 class MultiDomainFixturesTests(unittest.TestCase):
     """Test that all 7 domain types + custom types validate and dry-run."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "knowledge.db")
+        _build_seed_db(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
 
     DOMAIN_TYPES = [
         ("person", "Alice Smith", "A software engineer"),
@@ -623,7 +685,7 @@ class MultiDomainFixturesTests(unittest.TestCase):
                                 description=desc)],
                 "relationships": [],
             }
-            report = dry_run(data)
+            report = dry_run(data, db_path=self.db)
             self.assertTrue(report.safe, f"type {ntype} dry-run should be safe")
 
     def test_custom_type_validate_and_dry_run(self):
@@ -634,7 +696,7 @@ class MultiDomainFixturesTests(unittest.TestCase):
             "relationships": [],
         }
         self.assertTrue(validate_external(data).valid)
-        report = dry_run(data)
+        report = dry_run(data, db_path=self.db)
         self.assertTrue(report.safe)
 
     def test_cross_domain_relationships(self):
@@ -655,7 +717,7 @@ class MultiDomainFixturesTests(unittest.TestCase):
         }
         result = validate_external(data)
         self.assertTrue(result.valid)
-        report = dry_run(data)
+        report = dry_run(data, db_path=self.db)
         self.assertTrue(report.safe)
         self.assertEqual(report.relationships_total, 4)
 
@@ -716,55 +778,6 @@ class CLITests(unittest.TestCase):
             r = self._run("dry-run", path)
             self.assertIn("External import dry-run", r.stdout)
             self.assertIn("SAFE:", r.stdout)
-
-
-# -- production DB constants -----------------------------------------------
-
-class ProductionDBConstantsTests(unittest.TestCase):
-    def test_node_count(self):
-        conn = _read_only_conn(KNOWLEDGE_DB)
-        try:
-            count = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
-            self.assertEqual(count, 4846)
-        finally:
-            conn.close()
-
-    def test_relationship_count(self):
-        conn = _read_only_conn(KNOWLEDGE_DB)
-        try:
-            count = conn.execute(
-                "SELECT COUNT(*) FROM relationships").fetchone()[0]
-            self.assertEqual(count, 1338)
-        finally:
-            conn.close()
-
-    def test_source_count(self):
-        conn = _read_only_conn(KNOWLEDGE_DB)
-        try:
-            count = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
-            self.assertEqual(count, 6)
-        finally:
-            conn.close()
-
-    def test_integrity_check(self):
-        conn = _read_only_conn(KNOWLEDGE_DB)
-        try:
-            result = conn.execute("PRAGMA integrity_check").fetchone()[0]
-            self.assertEqual(result, "ok")
-        finally:
-            conn.close()
-
-    def test_foreign_key_check(self):
-        conn = _read_only_conn(KNOWLEDGE_DB)
-        try:
-            result = conn.execute("PRAGMA foreign_key_check").fetchall()
-            self.assertEqual(result, [])
-        finally:
-            conn.close()
-
-    def test_hash_unchanged(self):
-        self.assertEqual(_db_hash(),
-                         "000d4fdeb00f09ccb0790330850d3f6f5d34a00b7719c31c8ff7649a503a9a91")
 
 
 if __name__ == "__main__":

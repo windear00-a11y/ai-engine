@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from retrieval.repository import KnowledgeRepository, DEFAULT_KNOWLEDGE_DB
+from retrieval.repository import KnowledgeRepository
 from retrieval.migration import migrate_json_to_sqlite
 from retrieval.knowledge import KnowledgeStore, VALID_TYPES
 
@@ -295,24 +295,6 @@ class MigrationTests(unittest.TestCase):
         self.assertGreater(res["count"], 0)
         follow = tools.follow("transport-component", rel_type="instance_of")
         self.assertIn("transport", {n["id"] for n in follow["nodes"]})
-
-
-class RealArtifactTests(unittest.TestCase):
-    """Verify the committed project database (database/knowledge.db).
-
-    NOTE: this test must NOT clear the real artifact -- the Python corpus and
-    any other ingested sources live here too, and wiping them would destroy
-    persistent memory. It only asserts the migrated React knowledge is present.
-    """
-
-    def test_artifact_exists_and_consistent(self):
-        if not os.path.exists(DEFAULT_KNOWLEDGE_DB):
-            migrate_json_to_sqlite(KNOWLEDGE_DIR, DEFAULT_KNOWLEDGE_DB, clear=True)
-        repo = KnowledgeRepository(DEFAULT_KNOWLEDGE_DB)
-        repo.initialize()
-        self.assertEqual(repo.get_node("react")["name"], "React")
-        self.assertGreaterEqual(repo.count_nodes(), 4)
-        self.assertGreaterEqual(repo.count_relationships(), 11)
 
 
 if __name__ == "__main__":

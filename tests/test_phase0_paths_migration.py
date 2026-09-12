@@ -3,7 +3,7 @@
 Tests for ai_engine/paths.py and ai_engine/migration.py.
 
 Covers:
-  * existing knowledge.db SHA/counts remain unchanged
+  * migration preserves the source database byte-for-byte
   * contract v1 remains unchanged
   * HARD_WRITE_INVARIANTS remain unchanged
   * path resolution with AI_ENGINE_DATA_DIR / XDG_DATA_HOME / default
@@ -13,8 +13,8 @@ Covers:
   * source database remains unchanged after migration
   * migrated database passes integrity_check
 
-All tests are stdlib-only, use :memory: or temp dirs, never modify
-production database/* files, never touch tools/permissions or
+All tests are stdlib-only, use :memory: or temp dirs, never require or
+create the committed database, never touch tools/permissions or
 intelligence/* behavior.
 """
 
@@ -29,20 +29,12 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-# Expected invariants from audit at HEAD f39fed6
-EXPECTED_KNOWLEDGE_SHA = "000d4fdeb00f09ccb0790330850d3f6f5d34a00b7719c31c8ff7649a503a9a91"
-EXPECTED_NODES = 4846
-EXPECTED_RELATIONSHIPS = 1338
-EXPECTED_SOURCES = 6
-
 EXPECTED_CONTRACT_VERSION = "1"
 EXPECTED_OPERATIONS = ("search", "get", "related", "follow", "provenance", "inspect")
 EXPECTED_HARD_WRITE_INVARIANTS = [
     ("database/knowledge.db", "blocked"),
     ("database/knowledge.db.backup", "blocked"),
 ]
-
-LEGACY_DB = os.path.join(_ROOT, "database", "knowledge.db")
 
 
 def _sha256(path):
@@ -54,22 +46,6 @@ def _sha256(path):
 
 
 class InvariantTests(unittest.TestCase):
-    def test_knowledge_db_sha_unchanged(self):
-        self.assertTrue(os.path.exists(LEGACY_DB), f"legacy DB missing {LEGACY_DB}")
-        self.assertEqual(_sha256(LEGACY_DB), EXPECTED_KNOWLEDGE_SHA)
-
-    def test_knowledge_db_counts_unchanged(self):
-        con = sqlite3.connect(f"file:{LEGACY_DB}?mode=ro", uri=True)
-        try:
-            nodes = con.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
-            rels = con.execute("SELECT COUNT(*) FROM relationships").fetchone()[0]
-            srcs = con.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
-        finally:
-            con.close()
-        self.assertEqual(nodes, EXPECTED_NODES)
-        self.assertEqual(rels, EXPECTED_RELATIONSHIPS)
-        self.assertEqual(srcs, EXPECTED_SOURCES)
-
     def test_contract_v1_unchanged(self):
         from api.contract import CONTRACT_VERSION, OPERATIONS
         self.assertEqual(CONTRACT_VERSION, EXPECTED_CONTRACT_VERSION)
@@ -78,16 +54,6 @@ class InvariantTests(unittest.TestCase):
     def test_hard_write_invariants_unchanged(self):
         from tools.permissions.policy import HARD_WRITE_INVARIANTS
         self.assertEqual(list(HARD_WRITE_INVARIANTS), EXPECTED_HARD_WRITE_INVARIANTS)
-
-    def test_database_integrity_ok(self):
-        con = sqlite3.connect(f"file:{LEGACY_DB}?mode=ro", uri=True)
-        try:
-            row = con.execute("PRAGMA integrity_check").fetchone()
-            self.assertEqual(row[0], "ok")
-            row2 = con.execute("PRAGMA foreign_key_check").fetchall()
-            self.assertEqual(row2, [])
-        finally:
-            con.close()
 
 
 class PathsResolutionTests(unittest.TestCase):
@@ -308,10 +274,14 @@ class MigrationTests(unittest.TestCase):
         from ai_engine.migration import migrate_database
         with tempfile.TemporaryDirectory() as tmp:
             src = os.path.join(tmp, "src.db")
-            # Create a legacy DB that is the real production knowledge.db copied
-            # Use the actual legacy file as source to prove source preservation
-            import shutil
-            shutil.copy2(LEGACY_DB, src)
+            # Build a small legacy-schema source DB via the repository
+            from retrieval.repository import KnowledgeRepository
+            repo = KnowledgeRepository(src)
+            repo.initialize()
+            sid = repo.add_source("src-src", version="1.0")
+            repo.add_node("s1", "concept", "S1", "desc", source_id=sid)
+            repo.add_node("s2", "concept", "S2", "desc", source_id=sid)
+            repo.close()
             sha_before = _sha256(src)
             # counts before
             con = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
@@ -351,9 +321,13 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             src_root = os.path.join(tmp, "legacy")
             os.makedirs(src_root)
-            # Copy only knowledge.db to legacy
-            import shutil
-            shutil.copy2(LEGACY_DB, os.path.join(src_root, "knowledge.db"))
+            # Build a tiny legacy-schema knowledge.db via the repository
+            from retrieval.repository import KnowledgeRepository
+            repo = KnowledgeRepository(os.path.join(src_root, "knowledge.db"))
+            repo.initialize()
+            sid0 = repo.add_source("legacy-src", version="1.0")
+            repo.add_node("lg1", "concept", "LG1", "desc", source_id=sid0)
+            repo.close()
             # Also create a tiny context.db
             ctx_path = os.path.join(src_root, "context.db")
             con = sqlite3.connect(ctx_path)
@@ -423,27 +397,6 @@ class MigrationTests(unittest.TestCase):
             res3 = create_compat_symlink("default", legacy_path=legacy_path, data_root=data_root)
             self.assertTrue(res3["ok"])
             self.assertTrue(res3.get("skipped"))
-
-    def test_production_knowledge_db_not_modified_by_any_migration(self):
-        # Run a migration using the real legacy dir as source but temp data_root as dest
-        # and ensure production file SHA/counts unchanged.
-        from ai_engine.migration import migrate_project_databases
-        sha_before = _sha256(LEGACY_DB)
-        con = sqlite3.connect(f"file:{LEGACY_DB}?mode=ro", uri=True)
-        cnt_before = con.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
-        con.close()
-        with tempfile.TemporaryDirectory() as tmp:
-            data_root = os.path.join(tmp, "data2")
-            res = migrate_project_databases("default", source_root=os.path.join(_ROOT, "database"), data_root=data_root)
-            # Should succeed for knowledge.db (and maybe others)
-            self.assertTrue(res["results"]["knowledge.db"]["ok"], res["results"]["knowledge.db"])
-        sha_after = _sha256(LEGACY_DB)
-        con = sqlite3.connect(f"file:{LEGACY_DB}?mode=ro", uri=True)
-        cnt_after = con.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
-        con.close()
-        self.assertEqual(sha_before, sha_after)
-        self.assertEqual(cnt_before, cnt_after)
-        self.assertEqual(cnt_before, EXPECTED_NODES)
 
     def test_tools_permissions_and_intelligence_not_modified(self):
         # Ensure we did not accidentally modify those modules' behavior by importing paths/migration

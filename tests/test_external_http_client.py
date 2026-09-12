@@ -52,9 +52,6 @@ from external_http_client.transport import (  # noqa: E402
     DEFAULT_PORT,
 )
 
-PRODUCTION_DB = os.path.join(_ROOT, "database", "knowledge.db")
-_HASH_BEFORE_SUITE = None
-
 FORBIDDEN_CODE_TOKENS = (
     "sqlite3", "sqlite", "retrieval", "knowledge_api", "http_server",
     "KnowledgeStore", "ai_engine", "schema", "api.contract",
@@ -71,13 +68,6 @@ STDLIB_IMPORTS = frozenset({
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _start_server(db, api_key=None, max_body_bytes=None, host="127.0.0.1"):
@@ -703,47 +693,6 @@ class SecurityTests(unittest.TestCase):
                 any(forbidden in m for m in new_mods),
                 "importing external_http_client loaded forbidden module %r"
                 % forbidden)
-
-
-# ---------------------------------------------------------------------------
-# Production DB Safety Tests (run last via alphabetical ordering)
-# ---------------------------------------------------------------------------
-
-class ProductionDBSafetyTests(unittest.TestCase):
-    """Production DB must be unchanged after all integration tests."""
-
-    def test_production_db_hash_unchanged(self):
-        if _HASH_BEFORE_SUITE is None:
-            self.skipTest("baseline hash not recorded")
-        self.assertEqual(_sha256(PRODUCTION_DB), _HASH_BEFORE_SUITE)
-
-    def test_production_db_integrity(self):
-        import sqlite3
-        conn = sqlite3.connect(PRODUCTION_DB)
-        try:
-            self.assertEqual(
-                conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
-            self.assertEqual(
-                conn.execute("PRAGMA foreign_key_check").fetchall(), [])
-        finally:
-            conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Module-level setup/teardown
-# ---------------------------------------------------------------------------
-
-def setUpModule():
-    global _HASH_BEFORE_SUITE
-    _HASH_BEFORE_SUITE = _sha256(PRODUCTION_DB)
-
-
-def tearDownModule():
-    # Verify production DB unchanged after ALL tests in this module.
-    h = _sha256(PRODUCTION_DB)
-    assert h == _HASH_BEFORE_SUITE, (
-        "production DB was modified: before=%s after=%s" % (
-            _HASH_BEFORE_SUITE, h))
 
 
 if __name__ == "__main__":

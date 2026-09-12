@@ -33,8 +33,6 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-LEGACY_DB = os.path.join(_ROOT, "database", "knowledge.db")
-
 class FederatedRecallTests(unittest.TestCase):
     def test_knowledge_only_recall(self):
         from ai_engine.memory import Memory
